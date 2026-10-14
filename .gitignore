@@ -1,0 +1,14 @@
+﻿# 依赖
+node_modules/
+
+# 导出产物 / 本地跑出来的图
+output/
+verify/out/
+
+# 本机临时文件与日志
+*.log
+Thumbs.db
+.DS_Store
+
+# 早期脚本误建的垃圾目录（%SystemDrive% 变量没被展开）
+%SystemDrive%/
