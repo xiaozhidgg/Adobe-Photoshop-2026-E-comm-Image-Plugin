@@ -1,0 +1,1 @@
+# Adobe-Photoshop-2026-E-comm-Image-Plugin
