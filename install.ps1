@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     「电商图片制作」UXP 面板插件 —— 未打包（开发者模式）安装 / 卸载脚本。
 
@@ -6,7 +6,7 @@
     把 plugin\ 目录复制到 Photoshop 扫描的「用户回退插件目录」，并可选地打开
     Photoshop 的「启用开发人员模式」开关。
 
-    落点依据（本机实测，见 docs/RESEARCH-install.md）：
+    落点依据（UXPLogs 每次启动都会记录）：
       UXPLogs 每次启动都会记录
         upic::Loading plugins from user fallback plugins folder: <APPDATA>\Adobe\UXP\Plugins\External
 
@@ -53,7 +53,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
-# 常量（均有本机实测证据，见 docs/RESEARCH-install.md）
+# 常量
 # ---------------------------------------------------------------------------
 $DefaultPluginId    = 'com.ecom.psimage'
 $UserFallbackRoot   = Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'

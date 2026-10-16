@@ -122,7 +122,7 @@ window.Ecom = window.Ecom || {};
   //   AM 里就是「创建剪贴蒙版」：调整层只作用于剪贴组最底下的主体层，不再影响主体下方的背景/其它图层。
   //   只对【调整层】做 —— 锐化/降噪那两条链作用在主体自身，不能剪贴。
   //   ★ 写法本身有坑（用户 m03367 真机 + 权威回读定案）：`set {to:{clipping:true}}` 在这台 PS 27.1 上无报错但不生效
-  //   （日志「成功 N/N」而图层只有 mask 没有 clipping）；本机可用的是 groupEvent + group:true。
+  //   （日志「成功 N/N」而图层只有 mask 没有 clipping）；实测可用的是 groupEvent + group:true。
   var CLIP_KEYS = { "saturation": 1, "brightness/contrast": 1, "temperature": 1, "whiteBalance": 1, "exposure": 1 };
   function clipStepFor(layerId) {
     return {
@@ -252,7 +252,7 @@ window.Ecom = window.Ecom || {};
 
       // saturation + temperature —— 一个「颜色和自然饱和度」层调两个滑块
       //   ★ 用户 m03252 原话：「图1调色后不要使用照片滤镜了…颜色和自然饱和度创建了两个，改为创建一个调两个滑块就行」。
-      //   本机取证：该调整层的 AM 类名就是 vibrance（用户手建的那层 kind=vibrance），
+      //   实测取证：该调整层的 AM 类名就是 vibrance（用户手建的那层 kind=vibrance），
       //   面板＝白平衡/色温/色调/自然饱和度/饱和度；「色温」滑块的调整数据键名取 temperature。
       //   所以饱和度与色温共用【一个】vibrance 层、一次 set 写两个键；
       //   照片滤镜回退链已按用户要求删除（它会在最上层且不受剪贴，正是用户看到的「整幅变暖」）。
@@ -404,7 +404,7 @@ window.Ecom = window.Ecom || {};
           chain7.push({ _obj: "select", _target: [{ _ref: "layer", _id: subjectId }] });
           chain7.push({ _obj: "newPlacedLayer", _isCommand: true, _options: { dialogOptions: "silent" } });
         }
-        // 主实现用本机取证的 dustAndScratches（reduceNoise 全树 0 命中，[推断]）
+        // 主实现用实测取证的 dustAndScratches（reduceNoise 全树 0 命中，[推断]）
         chain7.push({ _obj: "dustAndScratches", radius: radius, threshold: threshold });
         var r7 = await execStep(ps, "noise", chain7);
         if (!r7.ok) {
@@ -449,7 +449,7 @@ window.Ecom = window.Ecom || {};
             ps.log("error", "第 " + (ci + 1) + " 个调整层两次 groupEvent 都无报错，但回读 " + vfy.data.key + "=false → 剪贴未生效");
           } else if (clipRes.ok) {
             clipped++;
-            ps.log("info", "剪贴已按 groupEvent 发送（层 id=" + clipIds[ci] + "），本机读不到剪贴键、无法回读确认" +
+            ps.log("info", "剪贴已按 groupEvent 发送（层 id=" + clipIds[ci] + "），实测读不到剪贴键、无法回读确认" +
               (vfy && vfy.error ? "：" + vfy.error : "：返回键=" + (vfy && vfy.data ? vfy.data.keys : "")));
           } else {
             if (!clipNote) clipNote = clipRes.error;

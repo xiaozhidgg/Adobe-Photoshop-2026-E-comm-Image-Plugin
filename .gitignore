@@ -3,10 +3,10 @@ node_modules/
 
 # 导出产物 / 本地跑出来的图
 output/
-verify/out/
 
-# 标定生成物（verify/make-calibration-images.py、probe-two-objects.py 现场生成，含 MB 级 .raw）
-verify/calib/
+# 内部工程文档与开发用探针脚本：只留在本地，不随插件发布
+docs/
+verify/
 
 # 本机临时文件与日志
 *.log

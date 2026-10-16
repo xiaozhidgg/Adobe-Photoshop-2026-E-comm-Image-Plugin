@@ -170,7 +170,7 @@ window.Ecom = window.Ecom || {};
 
   function deselectDesc() { return { _obj: "deselect", _target: [{ _ref: "channel", _property: "selection" }] }; }
 
-  // 取消选区的四种写法（★ 四种都要发，不能只看 executeAction 的返回值 —— 本机「不抛异常」≠「被执行」）
+  // 取消选区的四种写法（★ 四种都要发，不能只看 executeAction 的返回值 —— 实测「不抛异常」≠「被执行」）
   // ★ 真机 2026-10-16 13:37:52 实测：`{_obj:"deselect", _target:[channel/selection]}` 返回 ok，
   //   但画布上的矩形选区**原样还在**（用户截图确认）。app.js 自己的 deselect 其实是「把 selection 通道
   //   set 成 ordinal none」（docs/RESEARCH-descriptors.md 取证，app.js 偏移 16884）⇒ 那条才是权威写法，

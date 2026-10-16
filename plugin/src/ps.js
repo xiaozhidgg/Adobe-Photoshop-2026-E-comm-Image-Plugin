@@ -152,7 +152,7 @@ window.Ecom = window.Ecom || {};
   }
 
   // ★ 第 2 轮缺陷 2：不再尝试 append，也不再有 appendOk 状态机。
-  //   本机取证：D:\software\Adobe Photoshop 2026\Required\UXP\ 下 3072 个 .js 里 `append: true` 0 命中，
+  //   实测取证：Photoshop 安装目录\Required\UXP\ 下 3072 个 .js 里 `append: true` 0 命中，
   //   Adobe 自家插件从不这么写。危险点在于 UXP 可能【忽略】不认识的选项而不是抛错 ——
   //   那样 appendOk 会永远停在 true，退化分支永不触发，日志被静默覆盖成只剩最后一行，
   //   恰好在最需要日志的场景下以最坏的方式失效。故只走已取证的「读全文 + 拼接 + 整体覆盖」。
@@ -446,7 +446,7 @@ window.Ecom = window.Ecom || {};
         var token = null;
         var doc = m.app.activeDocument;
         if (historyMode === "suspend" && doc) {
-          // G29 [本机取证]：suspendHistory / resumeHistory 必须成对且在 modal 回调内
+          // G29 [实测取证]：suspendHistory / resumeHistory 必须成对且在 modal 回调内
           token = await executionContext.hostControl.suspendHistory({ documentID: doc.id, name: label });
         }
         try {
@@ -529,7 +529,7 @@ window.Ecom = window.Ecom || {};
     colorPickerOpen = true;
     var m = mods();
     try {
-      // F28 [本机取证]：_target 必须是 application（不是 document），结果在 res[0][0].RGBFloatColor（0..255 标度）
+      // F28 [实测取证]：_target 必须是 application（不是 document），结果在 res[0][0].RGBFloatColor（0..255 标度）
       // 兼容两种返回层级：正常为 [[{RGBFloatColor}]]（多一层数组），部分宿主直接给 [{RGBFloatColor}]
       var res = await m.core.executeAsModal(function () {
         return m.action.batchPlay([{
@@ -596,7 +596,7 @@ window.Ecom = window.Ecom || {};
 
   async function snapshot() {
     try {
-      // G29 方案 (A) [本机取证]：取当前 historyState 的 _id（★ 不用 _index）
+      // G29 方案 (A) [实测取证]：取当前 historyState 的 _id（★ 不用 _index）
       var res = await readBatchPlay([{
         _obj: "get",
         _target: { _ref: [{ _ref: "historyState", _enum: "ordinal", _value: "targetEnum" }] }
@@ -631,7 +631,7 @@ window.Ecom = window.Ecom || {};
   //   ⚠ 教训（第 17 轮真机）：harness 的 ops-jsx.js:624 用 stringIDToTypeID('applyLayerMask')，照抄到 UXP 后
   //   PS 27.1 回「命令"<未知的>"当前不可用」——stringIDToTypeID 只是凭空 mint 一个 ID，事件名不存在时
   //   当场不报错，要等 PS 真执行才说「未知的」。⇒「照抄 harness 的名字」不构成可用性证明；
-  //   本机真正生效的是下面候选表第一种 delete + apply:true（官方 apply 语义）。
+  //   实测真正生效的是下面候选表第一种 delete + apply:true（官方 apply 语义）。
   //   陷阱：不能靠"命令没报错"判定生效 —— 必须回读整层 get 确认蒙版真的消失（详见 docs/DEVELOPER.md §17）。
   async function applyUserMask(layerId, nameHint, busyBudgetMs) {
     var budget = (typeof busyBudgetMs === "number" && busyBudgetMs > 0) ? busyBudgetMs : 120000;
@@ -920,7 +920,7 @@ window.Ecom = window.Ecom || {};
     var mask = null;
     var holder = null;
     try {
-      // F27 [本机取证]：{layerID, kind:"user"}；无蒙版时该调用会抛异常
+      // F27 [实测取证]：{layerID, kind:"user"}；无蒙版时该调用会抛异常
       //   → 不变式：调用方必须先 hasUserMask 判定为 true（本文件两处调用点均已被 getUserMaskCoverage 的判定挡住），
       //     且判定只能用第 6 轮的「整层 get」形式，不得回退到被 PS 2026 拒绝的属性 get。
       // ★ 真机实测（与 getPixels 同因）：getLayerMask 与 imageData.getData() 都必须落在
@@ -1208,7 +1208,7 @@ window.Ecom = window.Ecom || {};
   // ★ 用户 m03367 真机取证（这条是硬证据，不要再退回旧写法）：
   //   旧写法 `set {to:{clipping:true}}` 在这台 PS 27.1 上【无报错但不生效】—— 日志连着几轮写「剪贴到主体：成功 N/N 个调整层」，
   //   而 photoshop_inspect 权威回读里那两个调整层只有 mask、没有 clipping，用户在图层面板也看不到折角箭头。
-  //   本机可用写法 = groupEvent（菜单「创建剪贴蒙版」），对照 DSH photoshop 插件 lib/ops-jsx.js:655 的 clipping_mask（同机实测可用）。
+  //   实测可用写法 = groupEvent（菜单「创建剪贴蒙版」），对照 DSH photoshop 插件 lib/ops-jsx.js:655 的 clipping_mask（同机实测可用）。
   //   改完之后由这里回读确认，不再凭「set 没报错」就宣布成功。
   async function readLayerClipping(layerId) {
     var r = await runRaw([{ _obj: "get", _target: [{ _ref: "layer", _id: layerId }] }]);
@@ -1262,7 +1262,7 @@ window.Ecom = window.Ecom || {};
     return { ok: true, data: { hasMask: true, coverage: r.data.coverage, maskEnabled: has.data.maskEnabled, maskWidth: r.data.width, maskHeight: r.data.height, layerId: layerId } };
   }
 
-  // 数值形态本机未取证 → 三种都认：裸数字 / {_value:n} / {_value:{_value:n}}
+  // 数值形态未实测 → 三种都认：裸数字 / {_value:n} / {_value:{_value:n}}
   function numDeep(v, depth) {
     if (v === null || v === undefined) return null;
     if (typeof v === "number") return isFinite(v) ? v : null;
@@ -1608,7 +1608,7 @@ window.Ecom = window.Ecom || {};
 
   // ★ 用户 m04355「导出加一个选择目录的选项」。
   //   依 Adobe 官方文档（UXP「Filesystem Operations」→ Ask the user to choose a location）：
-  //     选目录 = `localFileSystem.getFolder({ initialDomain })`，返回 Folder 或 null（用户取消），本机路径取 `folder.nativePath`；
+  //     选目录 = `localFileSystem.getFolder({ initialDomain })`，返回 Folder 或 null（用户取消），本地路径取 `folder.nativePath`；
   //   官方另有 createPersistentToken / getEntryForPersistentToken 用于"跨会话记住用户授权的位置"，那是
   //   `localFileSystem: "request"` 权限级别才需要的：本项目 manifest 是 `fullAccess`，写文件本来就走
   //   getEntryWithUrl("file:///绝对路径")（见本文件 createFolder/fileSize），所以记住路径字符串即可，无需 token。
@@ -1628,7 +1628,7 @@ window.Ecom = window.Ecom || {};
       if (!folder) return { ok: true, data: { cancelled: true } };
       var p = String(folder.nativePath || "").replace(/[\\\/]+$/, "");
       if (!p) {
-        return { ok: false, error: "已选中文件夹但拿不到本机路径（nativePath 为空；需要 manifest 的 localFileSystem=fullAccess）" };
+        return { ok: false, error: "已选中文件夹但拿不到本地路径（nativePath 为空；需要 manifest 的 localFileSystem=fullAccess）" };
       }
       return { ok: true, data: { path: p, name: String(folder.name || "") } };
     } catch (e) {
@@ -1650,7 +1650,7 @@ window.Ecom = window.Ecom || {};
       }
       var res = null;
       if (!got) {
-        // 途径 2（E20 [本机取证] 的描述符）：multiGet + extendedReference
+        // 途径 2（E20 [实测取证] 的描述符）：multiGet + extendedReference
         // ★ 一次同时取两个：boundsNoEffects（不含图层样式，首选）与 bounds（旧行为，含效果）。
         res = await readBatchPlay([{
           _obj: "multiGet",
@@ -1717,7 +1717,7 @@ window.Ecom = window.Ecom || {};
     }
   }
 
-  // LayerKind 取值取证：D:\software\Adobe Photoshop 2026\Required\UXP\constants.js 偏移 8284 区段
+  // LayerKind 取值取证：Photoshop 安装目录\Required\UXP\constants.js 偏移 8284 区段
   //   e.NORMAL="pixel", e.GROUP="group", e.SMARTOBJECT="smartObject", e.SOLIDFILL="solidColor", e.TEXT="text", …
   var SUBJECT_KINDS = ["pixel", "normal", "smartObject", "smartobject"];
 
@@ -1793,10 +1793,10 @@ window.Ecom = window.Ecom || {};
       var docW = docRes.data.width;
       var docH = docRes.data.height;
 
-      // F26 [本机取证]：对象参数形式；★ targetSize 只给 height（只给一维才等比）
+      // F26 [实测取证]：对象参数形式；★ targetSize 只给 height（只给一维才等比）
       // ★ 第 6 轮 F4：显式带 documentID，消除「未指定目标文档」这一整类隐式依赖
       //   （用户日志里 analyze.subject 在无蒙版的普通文档上也失败却一行日志都没有）。
-      //   UXP imaging 是否接受该键本机未取证 → 先带、被拒再退回原形式，两条路径都落盘，
+      //   UXP imaging 是否接受该键未实测 → 先带、被拒再退回原形式，两条路径都落盘，
       //   避免把「多带一个键」变成新的静默失败点。
       // ★ 整体放进 modal 作用域：真机实测 getPixels 与 imageData.getData() 都要求 modal scope
       var pix = await imagingCall("电商图片制作 · 读取像素", async function () {

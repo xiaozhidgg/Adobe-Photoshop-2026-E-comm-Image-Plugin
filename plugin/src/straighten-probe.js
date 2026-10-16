@@ -120,7 +120,7 @@ window.Ecom = window.Ecom || {};
   }
 
   // 建临时靶子文档的描述符 —— 真机失败后改成宿主自带形态。
-  // ★ 硬证据（本机读出，不是推测）：D:\software\Adobe Photoshop 2026\Required\UXP\photoshop.js 里
+  // ★ 硬证据（实测读出，不是推测）：Photoshop 安装目录\Required\UXP\photoshop.js 里
   //   Photoshop.prototype.createDocument 的实现即 batchPlay(makeDocument({mode,width,height,resolution,fill,…}))，
   //   而 makeDocument 产出的是
   //     { _obj:"make", new:{ _obj:"document",

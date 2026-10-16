@@ -1,5 +1,5 @@
 // Ecom.backdrop —— 背景与投影（INTERFACE §8）
-// B5 纯色填充层 + B6 层序（本机取证）
+// B5 纯色填充层 + B6 层序（实测取证）
 // ★ v4：投影不再靠 duplicate/fill/blur/move 链条，改为对主体层设 dropShadow 图层样式（真机 27.1 实测唯一可用形态）。
 window.Ecom = window.Ecom || {};
 
