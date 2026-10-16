@@ -179,6 +179,16 @@ ps.getSubjectPixels(opts)     // opts: { maxDim:number=512, applyAlpha?:boolean=
 //      做法：maskResampleFrame() 用比例判据（2% 内）判断网格是「整幅画布」还是「图层 bounds」，
 //      判不出就退回整幅画布并明写 warn；日志固定输出 `蒙版取景框=…（像素网格 …，文档 …，蒙版缓冲 …）`。
 //      改帧之前 624×1024 的掩膜基准结论一律不可信（角度被拉伸 1.354 倍）。
+//   ★★ 缺陷 7（2026-10-16 真机 14:48 取证）：**没有图层蒙版时 pixelFrame 以前是 null**，但网格照样是
+//      【该图层 bounds】区域（实测网格 637×1024 ≈ 图层 bounds 1358×2167 等比 642×1024）⇒ 逐物体摆正把网格
+//      按整幅画布等比换算（x 1844/637、y 4096/1024，两轴还不等比），选区落到错误区域，把上下两个物体各
+//      切开一块（真机实况：object #3 的选区 y 1468~2680，而它实际在 y 1680~2280 一带；两个被转的物体
+//      各有一条竖切口）。根因是「一键全流程」里 应用蒙版 排在 自动摆正 之前 ⇒ 摆正时已无蒙版。
+//      ⇒ 现在**与有没有蒙版无关**先判一次像素取景框（把文档尺寸当作「缓冲尺寸」传进 maskResampleFrame，
+//      只判网格本身是「整幅画布」还是「图层 bounds」），日志输出 `像素取景框=…（像素网格 …，文档 …）`，
+//      probe `getPixels.probe` 追加 `pixFrame`；蒙版若有取景框则一律复用同一帧（蒙版缓冲尺寸与文档不一致
+//      也复用，坐标同源）；逐物体摆正前另打印一行 `逐物体选区换算：像素网格 … → 文档 …，取景框 L…T…R…B…`，
+//      取景框缺失时会显式标 `★ 未识别到图层取景框，选区可能落错位置`。
 ```
 
 ## 5. `window.Ecom.store` —— 状态与预设（`src/store.js`）
@@ -469,6 +479,19 @@ window.Ecom.straightenProbe.run()
 //                   verdict:"skip"|"micro"|"confirm", notes }；失败时两者都带 ok:false + error/reason。
 //   探针调用 opts 只传 { channels }（3|4，决定 alpha / bgThreshold 分支），analyzeMask 用默认阈值。
 //   两者缺失、返回 ok:false 或未返回 mask 时数学分析跳过并记入 summary.warnings，不阻断事件名探测。
+//
+// ★ 数字输入框（用户 m03453，2026-10-16）：所有滑条右侧的数字都换成 <input type="number" class="row-num">，
+//   一直可编辑；回车或失焦生效（Esc 回滚）。规则由 snapNum/numBox 统一：非法输入回滚、越界夹到 min/max、
+//   按 step 对齐（顺手去掉 0.30000000000000004 这类浮点尾巴）；与滑条双向同步（拖滑条刷新数字、输数字
+//   移动滑条并触发同一个 onCommit）。程序化同步一律走返回对象的 set()（内部记 last 值，避免回车后失焦
+//   重复提交）。调色项同理：数字是 .adj-num（可输入，算作「手动」值），模式后缀（自动/手动/待统计/不可用）
+//   挪到旁边的 .adj-tag；setAdjustRow 用 num.set() 同步，绝不会把「自动」误变成「手动」。
+//   ★ 例外：「旋转角度」框**不传 min/max**（用户 m03711「你不要限制输入数」）⇒ 不夹取，只做 step 对齐；
+//   其余数字框都跟随各自滑条的范围。
+//
+// ★ 手动「旋转图层」按钮（用户 m03453）：角度输入框 + 按钮。点击 ⇒ fire("onManualRotate") ⇒ index.js 的
+//   onManualRotate ⇒ Ecom.straightenApply.rotateManual({subjectLayerId,subjectLayerName,angleDeg})，
+//   angleDeg 取自 state.straighten.manualAngleDeg（默认 1；只要是个数字就照存，**不夹取**）。契约见 §12.2 ⑪。
 ```
 
 ## 12.1 `window.Ecom.straighten` —— 摆正量数学（`src/straighten.js`，v4 新增，纯函数）
@@ -555,7 +578,7 @@ window.Ecom.straighten.analyzeMask(mask, width, height, opts)
 //   objMinAreaPct 0.005 / objMergeGapPx 3 / objMaxCount 5 / objMinElongation 1.2 / objMaxResidualDeg 0.7。
 // ★ 纯函数契约（冻结）：不 require 任何 UXP 模块、不读全局、不碰宿主、不写日志 ⇒ 可被 Node 用 vm 直接载入。
 //   离线自检：verify/straighten-math-check.js（node 直接跑；期望 28 用例 / 143 断言 / 失败 0 / 退出码 0）、
-//   verify/straighten-apply-check.js（122 项 / 0）、verify/straighten-multi-check.js（真机截图掩膜，8 项 / 0）。
+//   verify/straighten-apply-check.js（168 项 / 0，含手动「旋转图层」用例 28–35）、verify/straighten-multi-check.js（真机截图掩膜，8 项 / 0）。
 //   外部掩膜复算：verify/mask-analyze.js <raw> <w> <h>（拿任意 alpha 掩膜跑同一套数学）；
 //   verify/mask-frame-check.js <raw> <w> <h> <gridW> <gridH> <L> <T> <R> <B>（复现「整幅画布 → 网格」与
 //   「裁到 frame → 网格」两条取景框，用来证明网格非等比的放大倍数；见 §4 缺陷 3）。
@@ -632,6 +655,27 @@ window.Ecom.straightenApply.run({ subjectLayerId, subjectLayerName, subjectLayer
 //         **中心位移** dist > max(6, 0.02*max(bw,bh)) ⇒ 判失败（防 PS 用图层中心而不是选区中心当旋转中心，
 //         把物体整体挪走）；全部达标 ⇒ verified=true，否则 reason:"verify-failed"。
 //         data.perObject 逐条记 {tiltBeforeDeg,tiltAfterDeg,shiftPx,ok}，日志逐物体打印，供人工核对。
+//   ⑪ ★ 手动「旋转图层」（用户 m03453，2026-10-16）：`rotateManual(opts)` —— 面板按钮专用，与一键流程无关
+//      （不在 FLOW 里，moduleEnabled.straighten 也不影响它）。语义由用户拍板：① 永远整层转（多物体也一样，
+//      不逐物体、不建矩形选区）② 每次点按钮都按输入角度【累加】转一次 ③ 正数＝顺时针（与 PS 的
+//      angleUnit 同号 ⇒ 这里【不做】PS_ANGLE_SIGN 折算，与 run() 的方向处理相反）。
+//      参数 {subjectLayerId, subjectLayerName, angleDeg}；要求 |angleDeg| ≥ 0.01° 且是有限数字，
+//      ★ **角度不设上限**（用户 m03711：想输 90° 就输 90°，原先的 ±45° 夹取已去掉）；
+//      太小 / 非数字 / 缺图层 id ⇒ ok:false + error（**一个命令都不发**）。
+//      流程：校验 → detect 首测（日志「手动旋转前：…」）→ ensureUnlocked（接管「背景层转普通层」换 id）→
+//      finishSelection（★ 清不掉选区 ⇒ reason:"selection-clear-failed" 且不动画面：有选区时 PS 只变换
+//      选区内的像素，正是真机 14:48「物体被切开」的机制）→ 一次 [select 图层, transform angle=angleDeg]
+//      （被拒 ⇒ reason:"transform-rejected"）→ 回读 detect(forceMode=首测基准)。
+//      判据：预期倾斜 = fold(转前倾斜 + angle)（fold 与 tiltOf 同规则，±45° 处翻面）；
+//      |实测 − 预期| ≤ 容差 ⇒ verified=true。容差默认 MANUAL_TOL_DEG(0.25°)；但转前或转后
+//      |倾斜| ≥ AMBIG_TILT_DEG(40°) 时放宽到 AMBIG_TOL_DEG(1.5°) 并置 data.angleAmbiguous=true：
+//      ★ 真机 2026-10-16 15:41 实测，手动转到 45° 时物体在画面上成了菱形、长短轴几乎等长，
+//      倾斜角本身就测不准（两次都偏 0.6°）—— 放宽是为了不把「测量不确定」误报成「转错了」。
+//      若首测基准是图层蒙版且仍超容差，再用 "pixels" 复核一次（更好就采用 + data.maskBasisNote），
+//      仍不符 ⇒ reason:"verify-mismatch"（applied=true、画面已转，日志提示人工确认）。
+//      data 形状：{angleDeg, applied, verified, reason, error, tiltBeforeDeg, tiltAfterDeg, expectTiltDeg,
+//      thetaAfterDeg, turnsDeg[], layerId, layerName, manual:true, angleAmbiguous?, maskBasisNote?}。
+//      ★ 手动旋转【不】烘焙图层蒙版：整层转时蒙版随图层一起转，与逐物体的「选区变换不带走蒙版」不同。
 ```
 
 ## 13. `plugin/index.js` —— 编排（`ui-builder` 拥有）

@@ -79,6 +79,9 @@ window.Ecom = window.Ecom || {};
       compose: { center: true },
       // v6 新增：抠图后是否自动应用图层蒙版（关掉＝只算选区，蒙版由用户在图层面板手动添加）
       cutout: { autoMask: true },
+      // v7 新增：面板「旋转图层」按钮的输入角度（度）。只是把这个数字记下来供下次打开面板时回填；
+      //   手动旋转是一次性动作，不参与一键流程，也不改 state.moduleEnabled.straighten（用户 2026-10-16 决定）。
+      straighten: { manualAngleDeg: 1 },
       edge: { contract: 1, feather: 0.5 },
       shadow: { enabled: false, opacity: 30, blur: 40, offsetY: 12, color: "#000000" },
       adjust: {
@@ -207,6 +210,13 @@ window.Ecom = window.Ecom || {};
     //   保证 index.js 读 state.cutout.autoMask 不会抛 TypeError。
     if (raw.cutout && typeof raw.cutout === "object") {
       out.cutout.autoMask = boolOf(raw.cutout.autoMask, out.cutout.autoMask);
+    }
+    // v7：手动「旋转图层」的角度（面板输入框）。范围 ±45°（再大就不是「微调」了，请用 PS 的自由变换）。
+    if (raw.straighten && typeof raw.straighten === "object") {
+      // ★ 用户 m03711：角度不设上限（想存 90° 就存 90°），只要求是数字
+      if (isNum(raw.straighten.manualAngleDeg)) {
+        out.straighten.manualAngleDeg = raw.straighten.manualAngleDeg;
+      }
     }
 
     if (raw.edge && typeof raw.edge === "object") {

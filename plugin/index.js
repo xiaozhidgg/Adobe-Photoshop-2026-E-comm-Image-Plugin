@@ -552,6 +552,54 @@ window.Ecom = window.Ecom || {};
     return res;
   }
 
+  // ★ 用户 m03453（2026-10-16）：面板「旋转图层」—— 手动按输入的角度把主体层整层旋转一次。
+  //   · 不在 FLOW 里：一键全流程不碰它（用户已定），只由面板按钮触发。
+  //   · 角度存在 state.straighten.manualAngleDeg（会保存）；正＝顺时针；每点一次都按该角度累加转一次。
+  //   · 具体的安全动作（解锁 / 先取消选区 / 回读复核 / 像素基准兜底）全在 rotateManual 里。
+  function summarizeManual(d) {
+    var parts = [];
+    parts.push("角度 " + d.angleDeg + "°");
+    parts.push("倾斜 " + d.tiltBeforeDeg + "° → " + (d.tiltAfterDeg === null || d.tiltAfterDeg === undefined ? "未回读" : d.tiltAfterDeg + "°"));
+    if (d.applied) parts.push("已发旋转");
+    if (d.verified) parts.push("回读复核通过");
+    if (d.maskBasisNote) parts.push(d.maskBasisNote);
+    if (d.reason) parts.push("原因=" + d.reason);
+    return parts.join(" · ");
+  }
+
+  async function onManualRotate() {
+    if (busy) return;
+    var miss = require3("straightenApply", "rotateManual");
+    if (miss) {
+      log("error", "[旋转图层] fail · " + miss.error);
+      return;
+    }
+    var deg = Number(state.straighten && state.straighten.manualAngleDeg);
+    busy = true;
+    api.setBusy(true, "旋转图层：执行中…");
+    try {
+      forgetRunSubject();
+      var subj = await resolveRunSubject();
+      var res = await call(function () {
+        return window.Ecom.straightenApply.rotateManual({
+          subjectLayerId: subj.id,
+          subjectLayerName: subj.name,
+          angleDeg: deg
+        });
+      });
+      if (!res || res.ok === false) {
+        log("error", "[旋转图层] fail · " + String((res && res.error) || "unknown"));
+        return;
+      }
+      var d = res.data || {};
+      log("info", "[旋转图层] " + summarizeManual(d));
+      if (!d.applied) log("warn", "[旋转图层] 画面未改动（" + String(d.reason || d.error || "未知") + "）");
+    } finally {
+      busy = false;
+      api.setBusy(false, "");
+    }
+  }
+
   var FLOW = [
     { key: "cutout", label: "抠图", run: stepCutout },
     { key: "refine", label: "边缘净化", run: stepRefine },
@@ -910,6 +958,7 @@ window.Ecom = window.Ecom || {};
       on: {
         onRunAll: onRunAll,
         onRunModule: onRunModule,
+        onManualRotate: onManualRotate,
         onRunProbe: onRunProbe,
         onRestore: onRestore,
         onStateChange: onStateChange,

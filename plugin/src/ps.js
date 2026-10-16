@@ -1879,7 +1879,23 @@ window.Ecom = window.Ecom || {};
       // 像素网格覆盖的文档范围（null ＝ 按整幅画布等比）。逐物体摆正要把网格里的物体包围盒换算回文档坐标，
       // 换算依据就是这里定下的取景框。
       var pixelFrame = null;
+      var pixelFrameNote = "未知";
       var layerRes = await activeLayer();
+      // ★ 缺陷 7（2026-10-16 真机 14:48）：没有图层蒙版时 pixelFrame 一直是 null，但带 layerID 的像素网格
+      //   其实是【该图层 bounds】区域（实测网格 637×1024 ≈ 图层 bounds 1358×2167 等比 642×1024），
+      //   逐物体摆正于是把网格当整幅画布换算选区（x 1844/637、y 4096/1024 两轴还不等比）⇒ 选区落到错误
+      //   区域，把上下两个物体各切掉一块（真机：object #3 的选区 y 1468~2680，而它实际在 1680~2280 一带）。
+      //   ⇒ 与有没有蒙版无关，先用同一套「整幅画布 / 该图层 bounds」判据定出像素取景框。
+      var gridLayerId = (layerId !== null) ? layerId : (layerRes.ok ? layerRes.data.id : null);
+      if (gridLayerId !== null) {
+        var fp = await maskResampleFrame(gridLayerId, w, h, docW, docH, docW, docH);
+        pixelFrame = fp.frame;
+        pixelFrameNote = fp.note;
+        if (fp.warn) log("warn", "像素取景框：" + fp.warn);
+        log("info", "像素取景框=" + fp.note + "（像素网格 " + w + "x" + h + "，文档 " + docW + "x" + docH + "）");
+      } else {
+        pixelFrameNote = "没有图层（按整幅画布等比）";
+      }
       if (layerRes.ok) {
         var cov = await getUserMaskCoverage(layerRes.data.id);
         if (cov.ok && cov.data.hasMask && cov.data.coverage !== null) {
@@ -1892,9 +1908,20 @@ window.Ecom = window.Ecom || {};
             //   把画布蒙版直接塞进图层网格＝非等比拉伸：x 624/1844=0.3384 vs y 1024/4096=0.25
             //   ⇒ 竖直长轴的 tan 被放大 1.354 倍，实测把真值 0.66°/2.04° 抬成 0.95°/2.93°、
             //   逐物体极差/2 从 0.69（该转）翻成 0.99（不转）。⇒ 蒙版必须先裁到与像素同一取景框。
-            var fr = await maskResampleFrame(layerRes.data.id, w, h, docW, docH, maskRead.data.width, maskRead.data.height);
+            var fr;
+            if (pixelFrame) {
+              // 像素取景框已定 ⇒ 蒙版按同一取景框裁剪（蒙版缓冲尺寸与文档不一致时也用它：坐标同源）
+              fr = { frame: pixelFrame, note: pixelFrameNote + "（与像素同一取景框）" };
+              if (maskRead.data.width !== docW || maskRead.data.height !== docH) {
+                log("warn", "蒙版缓冲 " + maskRead.data.width + "x" + maskRead.data.height + " 与文档 " + docW + "x" + docH +
+                  " 不一致；仍按像素取景框裁剪蒙版（" + pixelFrameNote + "）");
+              }
+            } else {
+              fr = await maskResampleFrame(layerRes.data.id, w, h, docW, docH, maskRead.data.width, maskRead.data.height);
+              pixelFrame = fr.frame;
+              pixelFrameNote = fr.note;
+            }
             maskFrameNote = fr.note;
-            pixelFrame = fr.frame;
             if (fr.warn) log("warn", "蒙版取景框：" + fr.warn);
             alphaMask = resampleMask(maskRead.data, w, h, fr.frame);
             log("info", "蒙版取景框=" + fr.note + "（像素网格 " + w + "x" + h + "，文档 " + docW + "x" + docH +
@@ -1911,7 +1938,8 @@ window.Ecom = window.Ecom || {};
 
       probe("getPixels.probe", {
         pixels: w + "x" + h, channels: channels, docSize: docW + "x" + docH,
-        hasAlphaMask: !!alphaMask, maskCoverage: maskCoverage, maskFrame: maskFrameNote
+        hasAlphaMask: !!alphaMask, maskCoverage: maskCoverage, maskFrame: maskFrameNote,
+        pixFrame: pixelFrameNote
       });
 
       // 蒙版分辨率可能不等于像素分辨率 → 最近邻重采样到像素网格，保证 alphaMask.length === w*h

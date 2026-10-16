@@ -18,6 +18,15 @@ window.Ecom = window.Ecom || {};
   var MAX_ROTATE_ATTEMPTS = 2;   // 第一次 +（仅在“反向生效”时才有的）方向纠正一次
   // PS 的 transform.angle 正值＝顺时针；本模块 θ 正值＝长轴【向右下】倾斜（图像坐标 y 向下）⇒ 取负号转回水平。
   var PS_ANGLE_SIGN = -1;
+  // ★ 用户 m03453（2026-10-16）新增：面板上的手动「旋转图层」按钮（与一键流程无关）。
+  //   ★ 用户 m03711：角度【不设上限】—— 想输 90° 就输 90°（原先 ±45° 的夹取已去掉）。
+  var MIN_MANUAL_DEG = 0.01;     // 小于它就当没输入（0 / 空 ⇒ 不动画面）
+  var MANUAL_TOL_DEG = 0.25;     // 回读判据：实测倾斜与「预期倾斜」允许多大误差
+  // ★ 真机 2026-10-16 15:41：手动转到 45° 时，物体在画面上成了菱形 ⇒ 长轴与短轴几乎等长，
+  //   倾斜角本身测不准（两次实测都偏 0.6°）。这属于「测量不确定」，不是「转错了」：
+  //   角度落在这个区间时放宽判据并写明原因，别据此弹「与预期不符」。
+  var AMBIG_TILT_DEG = 40;       // |倾斜| ≥ 40° ⇒ 角度不可信
+  var AMBIG_TOL_DEG = 1.5;       // 不可信区间的回读容差
 
   function errText(e) {
     if (!e) return "unknown";
@@ -271,6 +280,14 @@ window.Ecom = window.Ecom || {};
     }
 
     // ② 逐个物体：矩形选区 → 原地旋转
+    // ★ 缺陷 7（2026-10-16 真机 14:48）：网格 → 文档坐标的换算依赖 pixFrame。没有取景框时会按
+    //   「整幅画布等比」换算，而带 layerID 的网格其实是图层 bounds ⇒ 选区落到错误区域、把物体切开。
+    //   把用的是哪一种取景框写进日志，事故时一眼能看出来。
+    var pf = ctx.first.pixFrame;
+    line(ps, "逐物体选区换算：像素网格 " + ctx.first.gridW + "x" + ctx.first.gridH + " → 文档 " +
+      ctx.first.docW + "x" + ctx.first.docH + "，取景框 " + (pf
+        ? ("L" + Math.round(pf.left) + " T" + Math.round(pf.top) + " R" + Math.round(pf.right) + " B" + Math.round(pf.bottom) + "（图层 bounds）")
+        : "整幅画布等比（★ 未识别到图层取景框，选区可能落错位置）"));
     var done = [], accAngle = 0;
     for (var i = 0; i < spec.items.length; i++) {
       var it = spec.items[i];
@@ -341,6 +358,134 @@ window.Ecom = window.Ecom || {};
     } else {
       data.reason = "verify-failed";
       warn(ps, "逐物体旋转已发出，但回读不完全达标（" + parts.join(" · ") + "）—— 请人工确认或用「回退」");
+    }
+    return { ok: true, data: data };
+  }
+
+  // 角度折叠：与 tiltOf 同一套规则（长轴在 ±45° 处翻面）。先取模 90，避免 ±1e9 这种极端输入把 while 拖死。
+  function foldDeg(x) {
+    var t = Number(x);
+    if (!isFinite(t)) return 0;
+    t = t % 90;
+    while (t > 45) t -= 90;
+    while (t <= -45) t += 90;
+    return t;
+  }
+
+  // ★ 用户 m03453（2026-10-16）：面板「旋转图层」—— 按输入角度把主体层【整层】转一次，不参与一键流程。
+  //   用户拍板的语义：① 永远整层转（多物体也一样，不做逐物体）；② 每次点按钮都按输入角度【累加】转一次；
+  //   ③ 正数＝顺时针（与 PS 的 angleUnit 同号，所以这里【不做】PS_ANGLE_SIGN 折算）。
+  //   两个前置动作是硬性的：
+  //   · 先取消选区 —— 选区还在时 PS 只变换选区内的像素（真机 14:48「物体被切开」就是这个机制），
+  //     而手动旋转的定义是「整层」；清不掉选区就不动手（宁可不动，也不制造局部错位）。
+  //   · 先解锁并接管图层 id 变更（背景层会被转成普通层并换 id，与 run() 同款）。
+  //   转完照旧回读：预期倾斜 = fold(转前倾斜 + angle)，实测差太多就告警（没生效 / 蒙版没跟随）。
+  async function rotateManual(opts) {
+    opts = opts || {};
+    var m = mods();
+    if (m.error) return { ok: false, error: m.error };
+    var ps = m.ps, S = m.S;
+
+    var layerId = (typeof opts.subjectLayerId === "number") ? opts.subjectLayerId : null;
+    var layerName = String(opts.subjectLayerName || "主体层");
+    var angle = Number(opts.angleDeg);
+    if (layerId === null) return { ok: false, error: "没有主体图层 id（请先抠图或指定主体层）" };
+    if (!isFinite(angle)) return { ok: false, error: "角度不是数字：" + String(opts.angleDeg) };
+    if (Math.abs(angle) < MIN_MANUAL_DEG) {
+      return { ok: false, error: "角度太小（|" + f2(angle) + "°| < " + MIN_MANUAL_DEG + "°），没有可转的量" };
+    }
+
+    var data = {
+      angleDeg: f2(angle), applied: false, verified: false, reason: null, error: null,
+      tiltBeforeDeg: null, tiltAfterDeg: null, expectTiltDeg: null, thetaAfterDeg: null,
+      turnsDeg: [], layerId: layerId, layerName: layerName, manual: true
+    };
+
+    // ① 转之前量一次：既要写日志，也开始定下回读基准（同一基准才可比）
+    var first = await detect(ps, S, layerId);
+    if (!first.ok) return { ok: false, error: first.error };
+    var t0 = tiltOf(first.analysis);
+    data.tiltBeforeDeg = f2(t0);
+    line(ps, "手动旋转前：" + detectLine(first.analysis, first.maskMode));
+
+    // ② 解锁 + 接管 id 变更
+    var unl = await ps.ensureUnlocked(layerId, layerName);
+    if (unl && unl.ok && unl.data && unl.data.layerId !== undefined && String(unl.data.layerId) !== String(layerId)) {
+      line(ps, "主体层 id 已由 " + layerId + " 变为 " + unl.data.layerId + "（背景层转换会换 id）→ 本次手动旋转改用新 id");
+      layerId = Number(unl.data.layerId);
+      data.layerId = layerId;
+    } else if (!unl || !unl.ok) {
+      warn(ps, "主体层解锁失败（" + String((unl && unl.error) || "unknown") + "）—— 仍尝试旋转，被拒会写在下面");
+    }
+
+    // ③ 取消选区（有选区时 PS 只转选区内的像素 → 会把画面转成「错位」）
+    var dz = await finishSelection(ps);
+    if (dz && dz.ok === false) {
+      data.reason = "selection-clear-failed";
+      data.error = dz.error;
+      warn(ps, "残留选区清不掉（" + dz.error + "），而选区还在时只会转选区内的像素（真机事故：物体被切开）" +
+        " → 本次手动旋转放弃，画面未改动");
+      return { ok: true, data: data };
+    }
+
+    // ④ 整层旋转
+    var r = await rotate(ps, layerId, layerName, angle, "电商图片制作 · 旋转图层（手动 " + f2(angle) + "°）");
+    if (!r.ok) {
+      data.reason = "transform-rejected";
+      data.error = r.error;
+      warn(ps, "手动旋转被拒（angle=" + f2(angle) + "°）：" + r.error + " —— 画面未改动");
+      return { ok: true, data: data };
+    }
+    data.applied = true;
+    data.turnsDeg.push(f2(angle));
+    line(ps, "已发出手动旋转：主体层「" + layerName + "」angle=" + f2(angle) + "°（正＝顺时针，整层）");
+
+    // ⑤ 回读：期望倾斜 = fold(转前 + angle)
+    var expect = foldDeg(t0 + angle);
+    data.expectTiltDeg = f2(expect);
+    var after = await detect(ps, S, layerId, first.maskMode);
+    if (!after.ok) {
+      data.reason = "readback-failed";
+      data.error = after.error;
+      warn(ps, "已发出手动旋转但回读失败（无法证明转了多少）：" + after.error + " —— 请人工确认，或用 PS 的 Ctrl+Z 撤销（面板「回退」只在跑过一次「一键生成全部」后才有快照）");
+      return { ok: true, data: data };
+    }
+    var t1 = tiltOf(after.analysis);
+    var dErr = Math.abs(t1 - expect);
+    var ambig = (Math.abs(t0) >= AMBIG_TILT_DEG || Math.abs(t1) >= AMBIG_TILT_DEG);
+    var tol = ambig ? AMBIG_TOL_DEG : MANUAL_TOL_DEG;
+    if (ambig) data.angleAmbiguous = true;
+    line(ps, "手动旋转回读：倾斜 " + f2(t0) + "° → " + f2(t1) + "°（发 angle=" + f2(angle) +
+      "°，预期 " + f2(expect) + "°，差 " + f2(dErr) + "°，容差 " + f2(tol) + "°" +
+      (ambig ? "；倾斜接近 ±45°，长轴/短轴几乎等长、这个角度本身测不准，已放宽" : "") + "）");
+
+    // 图层蒙版基准与预期不符时，用像素基准复核一次（蒙版没跟着图层旋转时，蒙版基准量不到变化）
+    if (dErr > tol && first.maskMode === "layerMask") {
+      var alt = await detect(ps, S, layerId, "pixels");
+      if (alt.ok) {
+        var tAlt = tiltOf(alt.analysis);
+        line(ps, "手动旋转回读复核（图层蒙版基准与预期不符，改用像素基准再量）：倾斜 " + f2(t0) + "° → " + f2(tAlt) + "°");
+        if (Math.abs(tAlt - expect) < dErr) {
+          t1 = tAlt;
+          dErr = Math.abs(tAlt - expect);
+          data.thetaAfterDeg = f2(alt.analysis.thetaDeg);
+          data.maskBasisNote = "图层蒙版没跟着图层旋转（像素基准才量到变化）";
+        }
+      } else {
+        line(ps, "手动旋转回读复核失败（像素基准也量不了：" + alt.error + "）");
+      }
+    }
+    data.tiltAfterDeg = f2(t1);
+    if (data.thetaAfterDeg === null) data.thetaAfterDeg = f2(after.analysis.thetaDeg);
+    if (dErr <= tol) {
+      data.verified = true;
+      line(ps, "手动旋转完成：主体层「" + layerName + "」已整层旋转 " + f2(angle) + "°，倾斜 " +
+        f2(t0) + "° → " + f2(t1) + "°（回读复核通过，误差 " + f2(dErr) + "°" +
+        (ambig ? "；接近 ±45°，角度测量精度有限" : "") + "）");
+    } else {
+      data.reason = "verify-mismatch";
+      warn(ps, "手动旋转回读与预期不符（预期 " + f2(expect) + "°，实测 " + f2(t1) + "°，差 " + f2(dErr) +
+        "°）—— 画面已转，请人工确认，或用 PS 的 Ctrl+Z 撤销（面板「回退」只在跑过一次「一键生成全部」后才有快照）");
     }
     return { ok: true, data: data };
   }
@@ -523,6 +668,8 @@ window.Ecom = window.Ecom || {};
 
   window.Ecom.straightenApply = {
     run: run,
+    // ★ 面板「旋转图层」按钮走这条（不参与一键流程），见 ui.js buildStraighten 的 onManualRotate
+    rotateManual: rotateManual,
     // 供离线引用 / 日志复核：改这两个常量前先看 docs/PROBE-straighten.md §5.3
     NOOP_THETA_DEG: NOOP_THETA_DEG,
     MIN_IMPROVE_DEG: MIN_IMPROVE_DEG,

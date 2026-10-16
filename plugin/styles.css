@@ -93,6 +93,14 @@ body {
   font-size: 11px;
 }
 
+/* ★ 用户 m03453：滑条右侧的数字改成「可输入的小框」（回车 / 失焦生效，与滑条双向同步） */
+.row-num {
+  flex: 0 0 48px;
+  min-width: 44px;
+  text-align: right;
+  margin-left: 4px;
+}
+
 .row-actions {
   margin-bottom: 0;
 }
@@ -298,6 +306,27 @@ textarea:disabled {
   flex: 1;
   min-width: 30px;
   margin: 0 5px 0 0;
+}
+
+/* ★ 用户 m03453：调色项的数值也改成可输入的小框，模式后缀（自动/手动/待统计/不可用）挪到旁边的 .adj-tag */
+.adj-num {
+  flex: 0 0 48px;
+  min-width: 44px;
+  text-align: right;
+  font-size: 10px;
+  padding: 2px 3px;
+}
+
+.adj-num-auto {
+  color: #7fd1a3;
+}
+
+.adj-tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: #9a9a9a;
+  margin-left: 3px;
+  white-space: nowrap;
 }
 
 .adj-val {

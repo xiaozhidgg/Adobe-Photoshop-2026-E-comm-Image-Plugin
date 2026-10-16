@@ -175,6 +175,49 @@ window.Ecom = window.Ecom || {};
       return cb;
     }
 
+    // ★ 用户 m03453（2026-10-16）：滑条右侧的数字改成「可点击输入的小框」——一直可编辑，
+    //   回车/失焦生效，与滑条双向同步。按 Adobe 官方对数字输入的要求实现：
+    //   非法输入回滚、越界夹到 min/max、对齐 step（避免滑条与数字显示不一致）。
+    function snapNum(v, min, max, step) {
+      var n = Number(v);
+      if (!isFinite(n)) return null;
+      if (min !== undefined && min !== null && min !== "") n = Math.max(Number(min), n);
+      if (max !== undefined && max !== null && max !== "") n = Math.min(Number(max), n);
+      var st = Number(step) || 0;
+      if (st > 0) {
+        n = Math.round(n / st) * st;
+        n = Math.round(n * 1000) / 1000;  // 0.1/0.5 这类步长会留浮点尾巴（0.30000000000000004）
+      }
+      return n;
+    }
+
+    // 数字小框：{node, set(v), commit(v), rollback()}；commit 由调用方挂。
+    function numBox(cls, min, max, step, title) {
+      var inp = document.createElement("input");
+      inp.type = "number";
+      inp.className = cls;
+      if (min !== undefined && min !== null && min !== "") inp.min = min;
+      if (max !== undefined && max !== null && max !== "") inp.max = max;
+      if (step !== undefined && step !== null && step !== "") inp.step = step;
+      inp.title = title || "可直接输入数值；回车或失焦生效";
+      var box = { node: inp, commit: null, rollback: null, last: null };
+      var apply = function () {
+        var v = snapNum(inp.value, min, max, step);
+        if (v === null) { if (box.rollback) box.rollback(); return; }
+        inp.value = v;                       // 顺手规范化显示
+        if (v === box.last) return;          // 没变就不重复提交（回车后失焦会走两次）
+        box.last = v;
+        if (box.commit) box.commit(v);
+      };
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); apply(); }
+        else if (e.key === "Escape") { if (box.rollback) box.rollback(); }
+      });
+      inp.addEventListener("blur", function () { apply(); });
+      box.set = function (v) { box.last = Number(v); inp.value = Number(v); };
+      return box;
+    }
+
     function sliderRow(parent, label, min, max, step, value, fmt, onCommit) {
       var row = el("div", "row");
       row.appendChild(el("span", "row-label", label));
@@ -184,14 +227,25 @@ window.Ecom = window.Ecom || {};
       range.max = max;
       range.step = step;
       range.value = value;
-      var val = el("span", "row-value", fmt(value));
-      range.addEventListener("input", function () { val.textContent = fmt(Number(range.value)); });
+      var box = numBox("row-num", min, max, step,
+        "可直接输入数值；回车或失焦生效（范围 " + min + "~" + max + "，步长 " + step + "）");
+      box.set(value);
+      box.commit = function (v) { range.value = v; onCommit(v); };
+      box.rollback = function () { box.set(Number(range.value)); };
+      range.addEventListener("input", function () { box.set(Number(range.value)); });
       range.addEventListener("change", function () { onCommit(Number(range.value)); });
       reg(range);
+      reg(box.node);
       row.appendChild(range);
-      row.appendChild(val);
+      row.appendChild(box.node);
       parent.appendChild(row);
-      return { node: range, value: val, fmt: fmt };
+      // 兼容旧调用点：node＝滑条、value＝数字框元素、set()＝程序化同步两者（不触发 onCommit）
+      return {
+        node: range,
+        value: box.node,
+        fmt: fmt,
+        set: function (v) { range.value = v; box.set(v); }
+      };
     }
 
     function textRow(parent, label, value, placeholder, width) {
@@ -364,9 +418,29 @@ window.Ecom = window.Ecom || {};
       var b = button(row, "执行自动摆正");
       b.addEventListener("click", function () { fire("onRunModule", "straighten"); });
       s.appendChild(row);
-      s.appendChild(el("div", "hint", "默认关。只处理「拍歪了一点点」的平面产品：主轴角 |θ|<3° 且四边残差、透视偏差都干净时才自动转正。角度由像素自己算，转完重读像素复核；发现转反了会自动反向纠正（方向常量在 src/straighten-apply.js）。"));
-      s.appendChild(el("div", "hint", "落在中间档（3°~15° 或残差不够干净）与「跳过」档（>15°、异形、斜放构图）时一律不动画面，只在日志写明角度与原因 —— 宁可漏转也不误转。"));
+      s.appendChild(el("div", "hint", "默认关。只处理「拍歪了一点点」的平面产品：相对轴向倾斜 |tilt|<5° 且四边残差、透视偏差都干净时才自动转正；多个物体时逐物体各转各的。角度由像素自己算，转完重读像素复核；发现转反了会自动反向纠正（方向常量在 src/straighten-apply.js）。"));
+      s.appendChild(el("div", "hint", "落在中间档（5°~15° 或残差不够干净）与「跳过」档（>15°、异形、斜放构图）时一律不动画面，只在日志写明角度与原因 —— 宁可漏转也不误转。"));
       s.appendChild(el("div", "hint", "只旋转主体层，不裁剪也不缩放：转后四角露出的透明区由后续「背景」步骤盖住。失败只写警告，不中断一键流程。"));
+
+      // ★ 用户 m03453（2026-10-16）：手动「旋转图层」—— 整层转、按输入角度累加、角度会保存、与一键流程无关。
+      var curAng = function () {
+        return (state.straighten && typeof state.straighten.manualAngleDeg === "number") ? state.straighten.manualAngleDeg : 1;
+      };
+      var arow = el("div", "row");
+      arow.appendChild(el("span", "row-label", "旋转角度 (°)"));
+      var ang = numBox("row-num", null, null, 0.1, "输入要旋转的度数（正＝顺时针，不限制大小）；回车或失焦生效并保存");
+      ang.set(curAng());
+      ang.commit = function (v) { fire("onStateChange", { straighten: { manualAngleDeg: v } }); };
+      ang.rollback = function () { ang.set(curAng()); };
+      inner.angRotate = ang;
+      arow.appendChild(ang.node);
+      s.appendChild(arow);
+      var mrow = el("div", "row row-actions");
+      var mb = button(mrow, "旋转图层");
+      mb.title = "按上面输入的度数把主体层整层旋转一次（正＝顺时针；每次点都累加；不参与一键全流程）";
+      mb.addEventListener("click", function () { fire("onManualRotate", null); });
+      s.appendChild(mrow);
+      s.appendChild(el("div", "hint", "手动旋转：按输入角度把主体层【整层】转一次（多物体也一样整层转），正数＝顺时针，每次点都按该角度累加、角度会保存。点之前会自动解锁图层并取消选区（有选区时只会转选区内的像素），转完回读复核并写日志。一键全流程不含这一步。"));
     }
 
     function buildRefine() {
@@ -714,22 +788,27 @@ window.Ecom = window.Ecom || {};
       }
     }
 
-    function setAdjustRow(key, item, range, val, mode, cb) {
-      cb.checked = !!item.enabled;
-      mode.value = item.auto ? "auto" : "manual";
+    function setAdjustRow(key, item, r) {
+      var range = r.range, num = r.num, tag = r.tag;
+      r.cb.checked = !!item.enabled;
+      r.mode.value = item.auto ? "auto" : "manual";
       var autoKnown = autoValues && autoValues[key] !== undefined && autoValues[key] !== null;
       var shown = item.auto ? (autoKnown ? autoValues[key] : item.value) : item.value;
+      var suffix, cls;
       if (item.auto && !autoKnown) {
         // 统计失败时不能只显示 0：用户会把「没算出来」当成「算出来就是 0」
-        val.textContent = round2(shown) + ((analysisAttempted && !analysis) ? " (不可用)" : " (待统计)");
-        val.className = "adj-val";
+        suffix = (analysisAttempted && !analysis) ? " (不可用)" : " (待统计)";
+        cls = "adj-num";
       } else if (item.auto) {
-        val.textContent = round2(shown) + " (自动)";
-        val.className = "adj-val adj-val-auto";
+        suffix = " (自动)";
+        cls = "adj-num adj-num-auto";
       } else {
-        val.textContent = round2(shown) + "";
-        val.className = "adj-val";
+        suffix = "";
+        cls = "adj-num";
       }
+      num.node.className = cls;
+      num.set(round2(shown));   // 程序化同步：不触发 commit，也不会把自动项变成手动
+      tag.textContent = suffix;
       range.min = item.min;
       range.max = item.max;
       range.value = shown;
@@ -778,20 +857,33 @@ window.Ecom = window.Ecom || {};
           range.max = item.max;
           range.step = ADJUST_STEP[key] || 1;
           range.value = item.value;
-          var val = el("span", "adj-val", "0");
+          // ★ 用户 m03453：数字也做成可输入的小框（拖滑条＝手动；直接输数字同样算手动值）
+          var tag = el("span", "adj-tag", "");
+          var num = numBox("adj-num", item.min, item.max, ADJUST_STEP[key] || 1,
+            "可直接输入数值；回车或失焦生效（算作手动值）");
+          num.set(round2(item.value));
+          num.commit = function (v) {
+            num.node.className = "adj-num";
+            tag.textContent = " (手动)";
+            fire("onStateChange", patchAdjust(key, { auto: false, value: v }));
+          };
+          num.rollback = function () { num.set(Number(range.value)); };
           range.addEventListener("input", function () {
-            val.textContent = round2(Number(range.value)) + " (手动)";
-            val.className = "adj-val";
+            num.node.className = "adj-num";
+            num.set(round2(Number(range.value)));
+            tag.textContent = " (手动)";
           });
           range.addEventListener("change", function () {
             fire("onStateChange", patchAdjust(key, { auto: false, value: Number(range.value) }));
           });
           reg(range);
+          reg(num.node);
           row.appendChild(range);
-          row.appendChild(val);
+          row.appendChild(num.node);
+          row.appendChild(tag);
           adjustBody.appendChild(row);
 
-          adjustRows[key] = { row: row, cb: cb, mode: mode, range: range, val: val };
+          adjustRows[key] = { row: row, cb: cb, mode: mode, range: range, num: num, tag: tag };
 
           if (key === "noise") {
             adjustBody.appendChild(el("div", "hint", "降噪算法是「蒙尘与划痕」（dustAndScratches），不是 PS 的「减少杂色」——两者观感不同，请以此为准。"));
@@ -813,7 +905,7 @@ window.Ecom = window.Ecom || {};
         var r = adjustRows[key];
         var item = state.adjust.items[key];
         if (!r || !item) continue;
-        setAdjustRow(key, item, r.range, r.val, r.mode, r.cb);
+        setAdjustRow(key, item, r);
       }
     }
 
@@ -865,8 +957,11 @@ window.Ecom = window.Ecom || {};
       if (inner.cbCenter) inner.cbCenter.checked = state.compose ? state.compose.center !== false : true;
 
       if (featherRange) {
-        featherRange.node.value = state.edge.feather;
-        featherRange.value.textContent = round2(state.edge.feather);
+        featherRange.set(state.edge.feather);
+      }
+      if (inner.angRotate) {
+        inner.angRotate.set((state.straighten && typeof state.straighten.manualAngleDeg === "number")
+          ? state.straighten.manualAngleDeg : 1);
       }
       if (contractInput) contractInput.value = state.edge.contract;
 
@@ -880,16 +975,13 @@ window.Ecom = window.Ecom || {};
       }
 
       if (shadowRefs.opacity) {
-        shadowRefs.opacity.node.value = state.shadow.opacity;
-        shadowRefs.opacity.value.textContent = Math.round(state.shadow.opacity);
+        shadowRefs.opacity.set(state.shadow.opacity);
       }
       if (shadowRefs.blur) {
-        shadowRefs.blur.node.value = state.shadow.blur;
-        shadowRefs.blur.value.textContent = Math.round(state.shadow.blur);
+        shadowRefs.blur.set(state.shadow.blur);
       }
       if (shadowRefs.offsetY) {
-        shadowRefs.offsetY.node.value = state.shadow.offsetY;
-        shadowRefs.offsetY.value.textContent = Math.round(state.shadow.offsetY);
+        shadowRefs.offsetY.set(state.shadow.offsetY);
       }
 
       updateStats();
@@ -897,8 +989,7 @@ window.Ecom = window.Ecom || {};
 
       buildSizeList();
       if (marginRange) {
-        marginRange.node.value = state.marginPercent;
-        marginRange.value.textContent = round2(state.marginPercent);
+        marginRange.set(state.marginPercent);
       }
       if (baseHint) {
         baseHint.textContent = "基准画布：" + baseSizeOf(state) + "px（勾选尺寸中最大者；留白比例相对它计算）";
@@ -906,8 +997,7 @@ window.Ecom = window.Ecom || {};
 
       if (formatSelect) formatSelect.value = state.export.format;
       if (qualityRange) {
-        qualityRange.node.value = state.export.quality;
-        qualityRange.value.textContent = Math.round(state.export.quality);
+        qualityRange.set(state.export.quality);
         var isPng = state.export.format === "png";
         qualityRange.node.disabled = busy || isPng;
       }
