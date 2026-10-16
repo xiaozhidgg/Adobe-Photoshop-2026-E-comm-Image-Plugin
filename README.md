@@ -8,21 +8,7 @@
 
 ---
 
-## 当前状态
-
-**已安装到本机**，且已被 PS 的 UXP 运行时发现并注册。安装证据（`%APPDATA%\Adobe\Adobe Photoshop 2026\Logs\UXPLogs_2026-10-13_16-03-37_128109.log`）：
-
-```
-upic::Loading plugins from user fallback plugins folder: C:\Users\EDY\AppData\Roaming\Adobe\UXP\Plugins\External
-upic::Number of plugins added from user's fallback: 1
-upic::Number of plugins added from system's fallback: 0
-```
-
-安装前该目录**不存在**；日志中**没有任何报错行**。
-
-### 打开面板
-
-Photoshop 已在运行（本次安装时启动的）。打开：
+## 打开面板
 
 > **窗口 → 增效工具（Plugins）→ 电商图片制作**
 
