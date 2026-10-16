@@ -159,12 +159,26 @@ ps.pickColor()                // → Promise<{ok, data:{hex}}>  showColorPicker 
 ps.snapshot()                 // → Promise<{ok, data:{token}}>  记录 historyState 的 _id（★ 不要用 _index）
 ps.restore(token)             // → Promise<{ok}|{ok:false,error}>  回退到该历史状态
 
-ps.getSubjectPixels(opts)     // opts: { maxDim:number=512 }
-// → Promise<{ok, data:{ width, height, rgba:Uint8Array, alphaMask:Uint8Array|null }}|{ok:false,error}>
+ps.getSubjectPixels(opts)     // opts: { maxDim:number=512, applyAlpha?:boolean=false, layerId?:number }
+// → Promise<{ok, data:{ width, height, rgba:Uint8Array, alphaMask:Uint8Array|null,
+//                        channels, alphaMaskCoverage, docWidth, docHeight,
+//                        pixelFrame:{left,top,right,bottom}|null }}|{ok:false,error}>
+//   pixelFrame: 上面那个取景框（文档坐标）。null ＝ 像素网格就是整幅文档的等比缩放（不带 layerId，或缩放比
+//               恰与文档一致）；非 null ＝ 网格是【该图层 bounds 区域】的等比缩放，调用方要用它把握手网格里的
+//               坐标/包围盒换算回文档坐标（straightenApply 的 gridRectToDoc 就是这么做的）。
 //   rgba     : 交错 RGB(A)，8 位。★ 只给 targetSize.height（实测只给一维才等比，手册 F26）
-//   alphaMask: 有图层蒙版时用 imaging.getLayerMask({layerID, kind:"user"}) 读；无蒙版时为 null
+//   alphaMask: 有图层蒙版时用 imaging.getLayerMask({layerID, kind:"user"}) 读；无蒙版时为 null；
+//              保证 alphaMask.length === width*height（宿主已重采样到像素网格）
 //   ★ 两个 imageData 包装对象都必须 dispose()，否则 PS 侧内存泄漏
-//   ★ applyAlpha 语义与 getLayerMask 返回结构均未经真机确认 → 首次运行须 console.log 核对（见 §15）
+//   ★ applyAlpha 语义：true＝按白底合成并【丢掉 alpha】(Adobe 官方标注) ⇒ 想要真 alpha 必须传 false
+//   ★★ 像素网格的取景框（2026-10-16 真机 12:49 取证，缺陷 3）：带 layerId 时 imaging.getPixels 返回的是
+//      【该图层 bounds 区域】的缩放像（真机图层 bounds 1412×2316 → 624×1024），不带 layerId 时是整幅文档
+//      （同一文档 461×1024 = 1844×4096 等比）。而 getLayerMask 的 gray 覆盖【整幅画布】1844×4096。
+//      两者不是同一个取景框 ⇒ 重采样前必须把画布蒙版裁到图层 bounds，否则非等比（x 0.3384 / y 0.25）
+//      会把竖直长轴的 tan 放大 1.354 倍（实测把地面真值 0.66°/2.04° 抬成 0.95°/2.93°，micro 翻成 confirm）。
+//      做法：maskResampleFrame() 用比例判据（2% 内）判断网格是「整幅画布」还是「图层 bounds」，
+//      判不出就退回整幅画布并明写 warn；日志固定输出 `蒙版取景框=…（像素网格 …，文档 …，蒙版缓冲 …）`。
+//      改帧之前 624×1024 的掩膜基准结论一律不可信（角度被拉伸 1.354 倍）。
 ```
 
 ## 5. `window.Ecom.store` —— 状态与预设（`src/store.js`）
@@ -215,6 +229,12 @@ analyze.subject()   // → Promise<{ok, error?, data?:{
 `make … at:{_ref:"channel",_enum:"channel",_value:"mask"}` 之后**当前通道就是那个蒙版**，`targetEnum` 于是删它本身（`apply` 与否都一样）。
 末步必须是 `deselect`：`{ _obj:"deselect", _target:[{ _ref:"channel", _property:"selection" }] }`。
 
+★★ **v6 修正（真机 2026-10-16 13:37:52）**：上面那条 `deselect` 会返回 ok，但**画布上的选区原样还在**（静默无效；
+本机 `executeAction` 的 ok 从来不能当「已生效」的证据）。app.js 自己的 deselect 是「把 selection 通道 set 成 none」
+（`docs/RESEARCH-descriptors.md` 取证，app.js 偏移 16884）⇒ 链尾在 `deselect` 之后再补一发：
+`{ _obj:"set", _target:[{ _ref:"channel", _property:"selection" }], to:{ _enum:"ordinal", _value:"none" } }`。
+它只动选区通道，不碰图层蒙版，`hasUserMask` 仍为 true。
+
 ```js
 cutout.remove(opts)  // opts: { contract:number, feather:number }  (px)
 // → Promise<{ok, error?, data?:{
@@ -224,7 +244,8 @@ cutout.remove(opts)  // opts: { contract:number, feather:number }  (px)
 // 主路径（全链本机取证）：rasterizeLayer → autoCutout{sampleAllLayers:false}
 //                        → [contract(选区)] → [feather(选区)]      ← 边缘净化在这里做，不在蒙版上做
 //                        → make channel mask revealSelection
-//                        → deselect                               ← v5：绝不能用 delete，它会删掉刚建好的蒙版
+//                        → deselect + set selection→none            ← v5：绝不能用 delete，它会删掉刚建好的蒙版
+//                                                                        v6：deselect 报 ok 但无效，必须补权威写法
 // 校验：读蒙版非零像素占比 maskCoverage
 //   若 maskCoverage < 0.001（空选区 → 全隐藏蒙版，图层看起来消失）→ 回退：
 // 回退路径：同链但 autoCutout{sampleAllLayers:true}（对文档合成取样），usedFallback=true
@@ -399,7 +420,7 @@ ui.refresh(state) / ui.setBusy(bool,label) / ui.setLog({time,level,text}) / ui.s
 
 // on 事件名（冻结）：
 //   onRunAll()                 一键全流程
-//   onRunModule(moduleKey)     moduleKey ∈ "cutout"|"refine"|"backdrop"|"shadow"|"adjust"|"compose"|"export"
+//   onRunModule(moduleKey)     moduleKey ∈ "cutout"|"refine"|"straighten"|"backdrop"|"shadow"|"adjust"|"compose"|"export"
 //   onRestore()                一键回退
 //   onStateChange(patch)       任何 UI 值变更，patch 为浅层补丁对象，由 index.js 合并
 //   onPickColor()
@@ -407,6 +428,7 @@ ui.refresh(state) / ui.setBusy(bool,label) / ui.setLog({time,level,text}) / ui.s
 //   onAddColor({name,hex}) / onRemoveColor(id)
 //   onImportPresets() / onExportPresets()
 //   onOpenOutputDir()
+//   onRunProbe()               只读探针（摆正）：取像素 → 数学分析 → 事件名探测，只写日志，不改画面
 ```
 
 UI 必须新增的控件（v3）：
@@ -420,6 +442,198 @@ UI 必须体现的提示（v2 新增）：
 - 「边缘净化 - 收缩」只在**一键抠图**时生效；单独点「边缘净化」按钮只做羽化。UI 上要写明。
 - 「降噪」的算法是「蒙尘与划痕」（非 PS 的「减少杂色」），UI 上要写明以免用户预期错位。
 
+只读探针（摆正，v4 新增）：
+
+```js
+window.Ecom.straightenProbe.run()
+// → { ok:true, data:{ lines:string[], summary:object } } | { ok:false, error:string }
+// lines: 本次探针写出的每一行日志（与 ps.log / ps.probe 的内容一致，便于调用方留档）
+// summary: { userId, userName, docsBefore, docsAfter, tempDocCreated, tempDocClosed,
+//            tempDocCloseError, userDocStillOpen, mode, coverage, alphaMaskCoverage,
+//            mathRan, analysis:{thetaDeg,edgeRmsPct,perspectiveMaxDeviation,verdict},
+//            eventRule, events:{<候选名>:{verdict,error}}, warnings:[] }
+//
+// ★ 只读契约（冻结）：只调用 Ecom.ps 的 activeDoc / getSubjectPixels({applyAlpha:false,maxDim:1024}) /
+//   log / probe / runRaw / require / safeJson —— 不 duplicate 用户文档、不新建或改动图层、不 save、
+//   不导出、不 kill PS。无活动文档时返回 ok:false，不抛异常。
+// ★ 事件名探测必须在探针自己新建的临时文档「dsh-straighten-probe」里做（空参调用有极小概率真的执行，
+//   不能拿用户的图当靶子）；靶子确认（活动文档名 === dsh-straighten-probe 且 id ≠ 用户文档 id）失败时
+//   整体跳过探测；finally 里 close(saving:"no") 并回读打开的文档列表证明用户文档未被改动。
+// ★ 事件名判定规则：错误原文含「未知的 / not currently available / 当前不可用」⇒ 名字不可用；
+//   出现具体数值/参数型错误 ⇒ 名字可用、只是参数不对。原始错误文本（message + code）原样入日志。
+// ★ 数学分析调用 Ecom.straighten.buildForegroundMask(pixels,width,height,opts) 与
+//   analyzeMask(mask,width,height,opts)。字段形状以 plugin/src/straighten.js 的实现为准：
+//   buildForegroundMask → { ok, mode:"alpha"|"bgThreshold", mask:Uint8Array(w*h) 0/1, width, height, bg, coverage }；
+//   analyzeMask → { ok, coverage, areaPx, centroid, thetaDeg, minRect:{cx,cy,w,h,thetaDeg},
+//                   edges:{top,right,bottom,left}, edgeRmsPct, quad, perspective:{widthRatio,heightRatio,maxDeviation},
+//                   verdict:"skip"|"micro"|"confirm", notes }；失败时两者都带 ok:false + error/reason。
+//   探针调用 opts 只传 { channels }（3|4，决定 alpha / bgThreshold 分支），analyzeMask 用默认阈值。
+//   两者缺失、返回 ok:false 或未返回 mask 时数学分析跳过并记入 summary.warnings，不阻断事件名探测。
+```
+
+## 12.1 `window.Ecom.straighten` —— 摆正量数学（`src/straighten.js`，v4 新增，纯函数）
+
+```js
+window.Ecom.straighten.STRAIGHTEN_THRESHOLDS   // 阈值表；opts 里同名键可逐个覆盖
+window.Ecom.straighten.buildForegroundMask(pixels, width, height, opts)
+// → { ok, mode:"alpha"|"bgThreshold", mask:Uint8Array(w*h) 0/1, width, height, bg, coverage } | { ok:false, error }
+//   pixels 是 ps.getSubjectPixels 的 data.rgba（长度 = w*h*channels，行优先）；
+//   opts:{ channels:3|4(默认4), alphaThreshold:128, tolerance:40, edgeBandPct:0.02,
+//          forceMode:"alpha"|"bgThreshold"（可选，锁死判模式；forceMode:"alpha" 遇 channels=3 直接 ok:false） }
+//   channels=4 且 alpha 可用 → mode:"alpha"；否则用「四周边缘带取背景色 + 阈值」→ mode:"bgThreshold"
+//   ★ bgThreshold 分支里，4 通道且 alpha < alphaThreshold 的像素一律当背景、并排除出背景色采样：
+//     整层旋转后露出的透明四角 RGB 常是 (0,0,0)，否则会被误判成前景、还会把背景色中位数拖黑。
+//   ★ 回读时必须传首测的 mode（straightenApply 就是这么做的）：同一图层在变换前后可能从 bgThreshold
+//     变成 alpha（四角变透明），换基准就会量到另一个形状（真机 2026-10-16 10:59:55 事故）。
+window.Ecom.straighten.buildMaskFromLayerMask(alpha, width, height, opts)
+// → { ok, mode:"layerMask", mask:Uint8Array(w*h) 0/1, width, height, bg:null, coverage } | { ok:false, error }
+//   alpha 是 ps.getSubjectPixels 的 data.alphaMask（当前激活层的用户蒙版，宿主已重采样到像素网格，
+//   长度保证 = w*h，值域 0~255）；opts:{ alphaThreshold:128, maxCoverage:0.99 }（minCoverage 沿用阈值表 0.01）。
+//   coverage < minCoverage → ok:false「前景过少」；coverage > maxCoverage → ok:false「几乎全白」。
+// ★ 抠图之后必须用【图层蒙版】当基准，而不是像素颜色阈值（真机 2026-10-16 12:40:21 事故）：
+//   抠图后的那一层，图层蒙版就是主体轮廓（真机 33.59%），但像素 alpha 仍可能是全 255
+//   （「按选区删背景」并不把像素变透明）⇒ buildForegroundMask 只能退回 bgThreshold，把灰底和产品一起当主体
+//   （真机 62.52%）⇒ 四边残差 23.26% ⇒ 误判 skip，什么都不做。
+//   基准优先级（straightenApply.detect）：① 图层蒙版可用 → 用它；② 否则像素带真 alpha → alpha；
+//   ③ 否则颜色阈值。回读锁死首测基准；首测基是图层蒙版但回读拿不到蒙版 ⇒ 硬失败（不静默换基准）。
+window.Ecom.straighten.planObjectRotations(an, opts)
+// → { items:[{ index/*1 起,对应 an.objects 次序*/, ok, tiltDeg, cx, cy, bw, bh, padPx,
+//              rect:{left,top,right,bottom}|null, reason? }],
+//     rotateCount, skips:[{index,reason}], notes:[] }
+//   opts:{ padPx:2, noopDeg:0.2 }（阈值表同名键 objMinElongation / objMaxResidualDeg 仍生效）
+// ★ 逐物体分开摆正（用户 2026-10-16 决策 A：保持单层，逐物体原地各转各的）的计划器，纯函数、无副作用：
+//   ① 非 multi（mode!=="multi"）或物体数 < 2 或 an.skipReason 存在 ⇒ 一个都不转，只在 notes 里写明原因
+//      （单物体路径仍走整层旋转，不受影响）；
+//   ② 逐个物体：elongation < objMinElongation（近似方形，tilt 无意义）⇒ 跳过；|tiltDeg| < noopDeg ⇒
+//      「本来就在它的正位」跳过；
+//   ③ 其余物体给矩形选区 rect ＝ 该物体原始包围盒（compTilt 的 minX/minY/maxX/maxY，**不是** w/h ——
+//      w/h 是旋转后的外接矩形宽度，会随 tilt 变大）各向外扩 pad：
+//      pad = ceil(0.5*sqrt(bw²+bh²)*tan(|tiltDeg|)) + padPx（容纳旋转后伸出的角）+ padPx；
+//   ④ ★ 邻居保护：若某个物体的 rect（外扩后）罩住另一个物体的包围盒，则该物体跳过并写明
+//      「会把邻居一起转」——宁可不动，也不能把旁边那个好物体转歪；两个都罩住 ⇒ 一个都不转。
+//   ⑤ 坐标是【掩膜网格】坐标，调用方（straightenApply）用 ps.getSubjectPixels 的 pixelFrame
+//      + gridW/gridH + docWidth/docHeight 换算成文档坐标，再发矩形选区。
+window.Ecom.straighten.analyzeMask(mask, width, height, opts)
+// → { ok, reason?, coverage, areaPx, centroid:{x,y}, thetaDeg∈(-90,90], tiltDeg∈(-45,45],
+//     mode:"single"|"multi", objectCount, objects:[{cx,cy,w,h,areaPx,thetaDeg,tiltDeg,elongation}],
+//     objectTilts:[], objectResidualDeg,
+//     minRect:{cx,cy,w,h,thetaDeg}, edges:{top,right,bottom,left}/*该边直线拟合 RMS 残差，占该边长 %*/,
+//     edgeRmsPct, quad:{topW,botW,leftH,rightH},
+//     perspective:{widthRatio,heightRatio,maxDeviation},
+//     verdict:"micro"|"confirm"|"skip", notes:[] } | { ok:false, reason }
+//
+// ★ tiltDeg = θ 折叠到 (-45, 45]，即「相对最近轴向的倾斜」：竖版主体（瓶子/盒子/牙膏管，产品图的大多数）
+//   长轴本来就竖直，θ 会报成 ≈±90°，只歪 2° 也报成 88° —— 判定与旋转量一律用 tiltDeg，用 θ 会把整类竖版图
+//   误判成「斜放」直接跳过（真机 2026-10-16 11:38:35：真实竖版图 θ=-86.15° ⇒ tilt=3.85°）。
+//   旋转方向天然正确：横版转到水平、竖版保持竖直（不会把竖版图放倒）。
+// ★ D 档多物体（v4.1 新增）：一张图里有 ≥2 个商品时，并集的二阶矩会被「物体之间的相对摆放」带偏 ——
+//   真机 2026-10-16 11:57:37 的「纸盒 + 牙膏管」并集 tilt=3.85°、并集四边残差 21.57%，而两个物体各自
+//   只有 +1.29° 和 +0.25°；按 3.85° 转会【过转】。故：
+//   ① 先做连通域分离（4 邻接）：面积 < objMinAreaPct 的连通域当碎片丢弃，间距 ≤ objMergeGapPx 的细缝合并且
+//      倾斜判据不看物体间距（同物体被白底切开的几块 tilt 几乎相同，靠倾斜一致性过关）；
+//   ② 丢弃过碎片后重建「干净掩膜」，单物体路径的矩/凸包只用它 —— 远处一个小碎块就足以把并集主轴带偏
+//      （合成自检用例 23：真实倾斜 2° 被算成 42.73°）；
+//   ③ objects.length ≥ 2 ⇒ mode:"multi"，tiltDeg 改用「各物体 tilt 的中点」(min+max)/2，
+//      objectResidualDeg = 极差/2；此时并集的四边残差/透视【不参与判定】（它们量的是物体间空隙，无判别力）；
+//   ④ multi 判定：objectCount > objMaxCount 或没有可用倾斜（全部近似圆形）⇒ "skip"；
+//      objectResidualDeg > objMaxResidualDeg ⇒ "confirm"（注明「没有任何单一角度能让它们同时摆正」）；
+//      |tiltDeg| < microThetaDeg ⇒ "micro"；其余 "confirm"。近似圆形物体（elongation < objMinElongation）
+//      的 tilt 无意义，不参与判定（其存在本身不阻断）。
+//   ⑤ ★ multi ⇒ 应用侧不再按「整层转中点」处理，而是**逐物体各自转**（用户 2026-10-16 决策 A，见
+//      planObjectRotations 与 §12.2 的 runPerObject）：整层转中点只让最歪的那个残余最小，另一个必被转歪。
+//      objMaxResidualDeg 因此不再阻断 multi（每个物体按自己的 tilt 转），它只剩诊断意义。
+// 判定顺序（冻结）：覆盖率 < minCoverage → ok:false「前景过少」；
+//   multi：见上面 ④；single：|tilt| > skipThetaDeg 或任一边 RMS > skipEdgeRmsPct 或
+//   maxDeviation > skipMaxDeviation 或凸包角点数 ≠ 4 → "skip"；
+//   |tilt| < microThetaDeg 且全部 RMS ≤ microEdgeRmsPct 且 maxDeviation ≤ microMaxDeviation → "micro"；其余 "confirm"。
+//   microThetaDeg 现为 5（用户 2026-10-16 决策，原 3）：真实产品图常见 tilt 3°~4°，3° 会让「自动微调」在实战中不干活。
+//   ★ 异形（圆/椭圆）不得判 micro（残差天然大，靠 skipEdgeRmsPct 挡住）。
+// 阈值（STRAIGHTEN_THRESHOLDS，冻结）：minCoverage 0.01 / skipThetaDeg 15 / skipEdgeRmsPct 3.0 /
+//   skipMaxDeviation 0.05 / microThetaDeg 5 / microEdgeRmsPct 1.5 / microMaxDeviation 0.01 /
+//   alphaThreshold 128 / tolerance 40 / edgeBandPct 0.02 / edgeMidPct 0.6 / edgeFitBandPct 0.02 /
+//   angleMismatchDeg 5 / rectTieAreaPct 0.005 / curvatureNotePct 0.5 / maxBoundaryPoints 20000 /
+//   objMinAreaPct 0.005 / objMergeGapPx 3 / objMaxCount 5 / objMinElongation 1.2 / objMaxResidualDeg 0.7。
+// ★ 纯函数契约（冻结）：不 require 任何 UXP 模块、不读全局、不碰宿主、不写日志 ⇒ 可被 Node 用 vm 直接载入。
+//   离线自检：verify/straighten-math-check.js（node 直接跑；期望 28 用例 / 143 断言 / 失败 0 / 退出码 0）、
+//   verify/straighten-apply-check.js（122 项 / 0）、verify/straighten-multi-check.js（真机截图掩膜，8 项 / 0）。
+//   外部掩膜复算：verify/mask-analyze.js <raw> <w> <h>（拿任意 alpha 掩膜跑同一套数学）；
+//   verify/mask-frame-check.js <raw> <w> <h> <gridW> <gridH> <L> <T> <R> <B>（复现「整幅画布 → 网格」与
+//   「裁到 frame → 网格」两条取景框，用来证明网格非等比的放大倍数；见 §4 缺陷 3）。
+```
+
+## 12.2 `window.Ecom.straightenApply` —— 自动摆正应用侧（`src/straighten-apply.js`，v4 新增，A 档）
+
+```js
+window.Ecom.straightenApply.run({ subjectLayerId, subjectLayerName, subjectLayerKind })
+// → { ok:true, data:{ verdict, thetaDeg, tiltDeg, thetaAfterDeg, tiltAfterDeg, applied, appliedAngleDeg,
+//                     verified, turnsDeg:[], reason?, error?, edgeRmsPct, maxDeviation, layerId, layerName,
+//                     mode:"single"|"multi", objectCount, objectTilts:[], objectResidualDeg,
+//                     perObject:[{index,tiltBeforeDeg,tiltAfterDeg,shiftPx,ok}], maskBaked:false,
+//                     maskBasisNote? } }
+// | { ok:false, error }   // 缺 Ecom.ps / 缺 Ecom.straighten / 没有 subjectLayerId / 读像素或分析失败
+//   applied=true ＝ 确实发过 transform 且像素变了；verified=true ＝ 回读复核确认 |倾斜| 变小。
+//   mode==="multi" 时旋转量＝各物体 tilt 的中点（日志里逐个列出各物体 tilt 并注明并集残差无判别力）；
+//   回读依旧比 tiltDeg（各物体 tilt 随整层旋转同步平移，故中点判据仍然成立）。
+//   reason ∈ "not-micro"(判为 confirm/skip ⇒ 没动画面) | "already-level"(|倾斜|<0.2°) | "transform-rejected"
+//          | "layer-locked"(主体层是锁着的「背景」层且自动解锁失败 ⇒ 零变换) | "no-effect"
+//          | "readback-failed" | "wrong-direction" | "failed"
+//          | "no-object-to-rotate"(multi 且没有可转的物体) | "multi-skip"(multi 且判定已给跳过理由)
+//          | "mask-bake-failed"(逐物体前烘焙图层蒙版失败 ⇒ 零变换) | "verify-failed"(逐物体回读没达标)
+//
+// ★ 安全契约（冻结）：
+//   ① 只在 verdict==="micro" 且 |tiltDeg| ≥ 0.2° 时才旋转；其余一律不动画面，只写日志（宁可漏转也不误转）。
+//      旋转量＝tiltDeg（不是 θ）：竖版主体 θ≈±90° 而 tilt 才是真正要纠的倾斜（见 §12.1）。
+//   ② 只旋转主体层，不裁剪、不缩放、不 flatten：先 select 该图层再 transform
+//      （freeTransformCenterState="QCSAverage" + angle + interpolation:"bicubic"）；
+//      ★ transform 只作用于【当前激活图层】，只给 _target 会被静默丢掉。
+//   ③ 幂等：已经摆正就不再重采样（|θ| < 0.2° 直接返回）。
+//   ④ 变换前先 ps.ensureUnlocked（真机 2026-10-16 10:46:31 / 11:19:06 / 11:24:45）：不透明图打开时只有一层
+//      PS 默认锁定的「背景」，不先转成普通层则 transform 被拒「命令"变换"当前不可用」；解不开锁时零变换、只告警。
+//      ★ 三条硬事实：① PS 的规则是【改掉背景层的名字才算转成普通层】，传回原名「背景」即使命令被接受也不转换，
+//      所以转换名用「图层 0」；② 背景层转普通层会【换 id】（真机 1 → 2，而且 PS 同时还会回一个错误项！）——
+//      「旧 id 读不到」不等于"还锁着"，必须按文档最底层重新定位并改用新 id 继续（真机 11:24:45 事故：图层其实
+//      已经变成普通层，插件却拿旧 id=1 重试，被「命令…当前不可用」挡了 61s，用户第二次点击才成功）；
+//      ③ ensureUnlocked 返回的 data.layerId ＝「现在该用哪个 id」，调用方（index.js:resolveRunSubject /
+//      straighten-apply.js）必须据此换 id，否则后续命令全打在一个不存在的图层上。
+//      写通道未就绪时仍会轮询等待（真机刚打开的文档约 20s 内 set/select/rasterizeLayer 全被拒），预算 20s。
+//      ★ 每个步骤在 index.js 的 resolveRunSubject() 里都会先调一次（用户要求：所有功能执行前先解锁图层）。
+//   ⑤ 方向不靠猜：转完重读像素再分析，|θ| 变小才算成功；只有「确实转向另一侧」（|θ| 变大）才反向补一次
+//      （净效果＝另一个方向）并警告建议改 PS_ANGLE_SIGN；θ 基本没变 ⇒ 判「变换未生效」立即停止，绝不盲转。
+//   ⑥ 所有变换走 Ecom.ps.run（history:"suspend" + lockProbe*），面板「回退」可整体复原。
+//   ⑦ 任何失败由 index.js 的 stepStraighten 转成 warn 并继续，绝不中断一键流程。
+//   ⑧ 依赖 Ecom.ps.getSubjectPixels({applyAlpha:false, maxDim:1024, layerId})
+//      —— ★ 必须 applyAlpha:false；true 会按白底合成、主动丢掉 alpha。
+//   ⑨ 基准优先级与「蒙版没跟着转」的兜底（真机 2026-10-16 12:40:21 事故后定，见 §12.1 的 buildMaskFromLayerMask）：
+//      首测自动挑基准＝① 图层蒙版（抠图产物）② 像素 alpha ③ 颜色阈值；回读一律带首测基准
+//      （detect 的 forceMode 参数，另有 forceMode:"pixels"＝明确要求用像素基准自动挑，跳过图层蒙版）。
+//      首测基是图层蒙版、回读时蒙版却消失 ⇒ reason:"readback-failed"（applied=true、verified=false），
+//      **绝不静默换基准**；回读蒙版量到「几乎没变」时，会再用像素基准复核一次（这一步才允许换基准来
+//      区分「蒙版没跟随旋转」与「变换没生效」），像素基准量到变好 ⇒ verified=true 并写 data.maskBasisNote。
+//      理由：蒙版未链接 / 蒙版已被应用时，蒙版不随图层旋转，单看蒙版会得到假「未生效」。
+//   ⑩ 逐物体摆正（mode==="multi" 时走 runPerObject，**不再经过 verdict==="micro" 门禁**：
+//      objMaxResidualDeg 只在单物体语义下阻断；multi 下每个物体按自己的 tilt 转，残余因此天然更小）：
+//      ① 计划来自 planObjectRotations（跳过规则见 §12.1）；rotateCount===0 ⇒ 不动画面，
+//         reason ＝ "no-object-to-rotate"，若 an.skipReason 存在则 reason ＝ "multi-skip"（保持原有语义）；
+//      ② ★ 旋转前必须先 ps.applyUserMask 烘焙图层蒙版：矩形选区内的 transform 不会带着图层蒙版一起转，
+//         不烘焙则转出去的边角被旧轮廓裁掉（物体顶端仍是水平切口）。烘焙失败 ⇒ reason:"mask-bake-failed"、
+//         零变换（宁可不动，也不留下被裁的边角）；烘焙成功 ⇒ data.maskBaked=true，回读改走像素基准
+//         （蒙版已经没了，detect 的 forceMode 传 "pixels"）；
+//      ③ 每个物体发 [select 图层, 矩形选区, transform angle=PS_ANGLE_SIGN*tilt]，选区 ＝ 该物体包围盒
+//         +外扩（网格坐标 → 文档坐标，用 pixelFrame 换算）；无蒙版（像素 alpha 真透明）时不需要烘焙；
+//         ★ 矩形选区的四条边必须各自是 `{_unit:"pixelsUnit",_value:N}`（UnitValue），不能把 _unit 写在矩形上、
+//         四边给裸数字 —— 真机 2026-10-16 13:29:32 就是这么被拒的：`NAPI API failure: Number expected`；
+//      ④ 变换被拒 ⇒ reason:"transform-rejected" 立即停止；⑤ 无论如何结束都要清掉选区（deselectDescs：四种写法
+//         依次全发，不提前 return）。★ 必须 preserveSelection:false —— ps.run 默认在批处理首尾插
+//         saveDocumentSelection/restoreDocumentSelection，末尾那条 restore 会把选区恢复回来，清选区被自己抵消
+//         （真机 2026-10-16 13:31:59）。★ 而且只发 `deselect` 会报 ok 却无效（真机 13:37:52：画布上矩形选区
+//         原样还在）⇒ 第一发必须是权威写法 `set selection→none`（app.js 自己的 deselect），随后
+//         `deselect(document)` / `deselect(channel)` / 空矩形兜底；逐条记日志，全被拒才写 warn；
+//      ⑥ 回读逐物体比对：|tiltAfter| ≤ |tiltBefore| − MIN_IMPROVE_DEG 或 ≤ NOOP_THETA_DEG ⇒ 该物体已摆正；
+//         **中心位移** dist > max(6, 0.02*max(bw,bh)) ⇒ 判失败（防 PS 用图层中心而不是选区中心当旋转中心，
+//         把物体整体挪走）；全部达标 ⇒ verified=true，否则 reason:"verify-failed"。
+//         data.perObject 逐条记 {tiltBeforeDeg,tiltAfterDeg,shiftPx,ok}，日志逐物体打印，供人工核对。
+```
+
 ## 13. `plugin/index.js` —— 编排（`ui-builder` 拥有）
 
 ```js
@@ -427,13 +641,17 @@ UI 必须体现的提示（v2 新增）：
 // 一键全流程顺序（冻结）：
 //   1. cutout   → Ecom.cutout.remove(state.edge)            // 边缘净化在此生效
 //   2. refine   → Ecom.cutout.refine({feather: state.edge.feather})
-//   3. backdrop → Ecom.backdrop.setSolid({hex})   // v3：不再传 name（层名由实现固定为 "背景"）
-//   4. shadow   → Ecom.backdrop.addShadow(state.shadow + subjectLayerId)
-//   5. adjust   → Ecom.analyze.subject() → Ecom.adjust.apply(...)
-//   6. compose  → Ecom.compose.normalize({baseSize, marginPercent, excludeLayerNames:["阴影"],
+//   3. applyMask→ Ecom.cutout.applyMask({subjectLayerId,...})  // v4：把蒙版烘焙进像素
+//   4. straighten→ Ecom.straightenApply.run({subjectLayerId,...}) // v4 A 档：只做 |θ|<3° 微调（可选）
+//   5. backdrop → Ecom.backdrop.setSolid({hex})   // v3：不再传 name（层名由实现固定为 "背景"）
+//   6. shadow   → Ecom.backdrop.addShadow(state.shadow + subjectLayerId)
+//   7. adjust   → Ecom.analyze.subject() → Ecom.adjust.apply(...)
+//   8. compose  → Ecom.compose.normalize({baseSize, marginPercent, excludeLayerNames:["阴影"],
 //                                          center: state.compose.center})              // v3
-//   7. export   → Ecom.export.run(...)
+//   9. export   → Ecom.export.run(...)
 // 快照时机（冻结）：第 1 步之前调用 Ecom.ps.snapshot()
+// v4：每个步骤在 resolveRunSubject() 里先调 Ecom.ps.ensureUnlocked(subjectLayerId, name)（真机 2026-10-16 11:19）
+//     —— 不透明图的主体层就是 PS 默认锁定的「背景」，不先解锁则变换类步骤被拒；解不开只 warn，不中断流程。
 // v3：启动后调用 Ecom.ps.logFilePath()，把路径交给 UI 显示（见 §12）
 // 任一步 ok:false → 记 error 日志并【停止】后续步骤（不静默继续）
 // baseSize 计算（冻结）：state.baseSizeId 命中则用之；否则取 state.sizes 中 enabled:true 的最大 w（无则 1600）

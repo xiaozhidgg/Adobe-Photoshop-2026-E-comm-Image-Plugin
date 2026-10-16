@@ -127,6 +127,38 @@ window.Ecom = window.Ecom || {};
     if (r && r.ok && r.data && typeof r.data.id === "number") {
       runSubject = { id: r.data.id, name: r.data.name || "?", kind: r.data.kind || "?" };
       log("info", "主体层锁定：「" + runSubject.name + "」(id=" + runSubject.id + "，kind=" + runSubject.kind + ") —— 抠图/边缘净化/投影/构图本轮流用这一层");
+      // ★ 用户要求（2026-10-16）：所有功能执行前先确认主体层没锁，锁着就先解锁再往下走。
+      //   真机事故：不透明图（JPG / 无 alpha PNG）打开时只有一层 PS 默认锁定的「背景」，变换被拒
+      //   「命令"变换"当前不可用」⇒ 每个步骤在这里统一解锁一次（锁不了不致命，只 warn，由该步骤自己处理）。
+      try {
+        var unl = await window.Ecom.ps.ensureUnlocked(runSubject.id, runSubject.name);
+        // ★ 换了 id 也算"要重解析"：背景层转普通层会换 id（真机 1 → 2），而 PS 可能同时回一个错误项，
+        //   真机 2026-10-16 11:24 就是这样 —— 图层其实已经变成普通层，插件却继续拿旧 id 干活，全被拒。
+        var idChanged = !!(unl && unl.ok && unl.data && unl.data.layerId !== undefined &&
+          String(unl.data.layerId) !== String(runSubject.id));
+        if (unl && unl.ok && (unl.data.unlocked || idChanged)) {
+          if (unl.data.unlocked) {
+            log("info", "主体层「" + runSubject.name + "」原为锁定状态，已自动解锁（" + (unl.data.via || "?") + "）");
+          }
+          if (idChanged) {
+            log("info", "主体层 id 已由 " + runSubject.id + " 变为 " + unl.data.layerId + "（背景层转换会换 id）→ 重新解析");
+          }
+          // ★ 与抠图的 rasterizeLayer 同款陷阱（index.js:305）：把「背景」转成普通层会【换 id】（真机 1 → 2），
+          //   这里必须重新解析一次，否则紧接着的模块拿着失效 id 干活（全报 Unknown layer / 命令当前不可用）。
+          var reSubj = null;
+          try { reSubj = await window.Ecom.ps.findSubjectLayer({}); } catch (eRe) { log("warn", "解锁后重解析主体层失败：" + errText(eRe)); }
+          if (reSubj && reSubj.ok && reSubj.data && typeof reSubj.data.id === "number" && reSubj.data.id !== runSubject.id) {
+            log("warn", "解锁后主体换了图层：id " + runSubject.id + "（「" + runSubject.name + "」）→ id " + reSubj.data.id +
+              "（「" + (reSubj.data.name || "?") + "」）→ 本次流程改用新图层");
+            runSubject = { id: reSubj.data.id, name: reSubj.data.name || runSubject.name, kind: reSubj.data.kind || runSubject.kind };
+          }
+        } else if (unl && unl.ok === false) {
+          log("warn", "主体层「" + runSubject.name + "」被锁定且无法自动解锁：" + (unl.error || "?") +
+            " —— 本模块可能需要先手动解锁（双击图层面板里的锁图标）再重跑");
+        }
+      } catch (eUnl) {
+        log("warn", "主体层解锁尝试抛错：" + errText(eUnl));
+      }
       return runSubject;
     }
     var fb = activeLayerId();
@@ -194,6 +226,37 @@ window.Ecom = window.Ecom || {};
     }
     if (key === "refine") {
       return "羽化=" + d.feather + "px 已应用=" + (d.applied ? "是" : "否") + " 原有蒙版=" + (d.hadMask ? "是" : "否");
+    }
+    if (key === "straighten") {
+      var multiNote = (d.mode === "multi" && d.objectCount)
+        ? ("多物体 " + d.objectCount + " 个（倾斜 " + (d.objectTilts || []).join("° / ") + "°）· ") : "";
+      if (d.perObject && d.perObject.length) {
+        var poBits = [];
+        for (var pi = 0; pi < d.perObject.length; pi++) {
+          var po = d.perObject[pi];
+          poBits.push("#" + po.index + " " + po.tiltBeforeDeg + "° → " +
+            (po.tiltAfterDeg === null ? "未回读" : po.tiltAfterDeg + "°"));
+        }
+        multiNote += "逐物体摆正 " + d.perObject.length + " 个（" + poBits.join(" · ") + "）· ";
+      }
+      if (d.applied) {
+        return multiNote + "主体层「" + (d.layerName || "?") + "」已旋转 " + d.appliedAngleDeg + "°（倾斜 " + d.tiltDeg + "° → " +
+          (typeof d.tiltAfterDeg === "number" ? d.tiltAfterDeg + "°" : "未回读") + (d.verified ? "，回读复核通过" : "，未复核") + "）";
+      }
+      var whyStraighten = d.reason === "failed" ? ("失败：" + (d.error || ""))
+        : d.reason === "not-micro" ? ("判为 " + (d.verdict || "?") + "，未动画面")
+        : d.reason === "already-level" ? "已经摆正"
+        : d.reason === "layer-locked" ? ("主体层被锁定且无法自动解锁：" + (d.error || ""))
+        : d.reason === "transform-rejected" ? ("PS 拒绝了变换：" + (d.error || ""))
+        : d.reason === "no-effect" ? "旋转未生效，已放弃"
+        : d.reason === "readback-failed" ? "转了但回读失败，请确认是否已摆正"
+        : d.reason === "wrong-direction" ? "旋转没把倾斜拉回，建议用「回退」"
+        : d.reason === "verify-failed" ? "逐物体旋转已发出，但回读不完全达标，请人工确认或用「回退」"
+        : d.reason === "mask-bake-failed" ? ("逐物体摆正需要先烘焙图层蒙版，烘焙失败：" + (d.error || ""))
+        : d.reason === "multi-skip" ? "多物体不满足逐物体摆正的条件，未动画面"
+        : d.reason === "no-object-to-rotate" ? "没有可单独摆正的物体，未动画面"
+        : (d.reason || "未旋转");
+      return multiNote + "未旋转（" + whyStraighten + "；倾斜 " + d.tiltDeg + "°）";
     }
     if (key === "backdrop" || key === "shadow") {
       return "图层「" + (d.layerName || "?") + "」 id=" + d.layerId;
@@ -468,10 +531,33 @@ window.Ecom = window.Ecom || {};
     return res;
   }
 
+  // ★ A 档（摆正）：只做 |θ|<3° 的小角度微调；判为 confirm / skip 时不动画面。
+  //   可选步骤 —— 任何失败只 warn + 继续（PLAN-straighten §5.2「可选步骤失败不得掐死流程」）。
+  //   检测数学在 src/straighten.js（纯函数），应用侧在 src/straighten-apply.js（旋转 + 回读复核）。
+  async function stepStraighten() {
+    var miss = require3("straightenApply", "run");
+    if (miss) return miss;
+    var subj = await resolveRunSubject();
+    var res = await call(function () {
+      return window.Ecom.straightenApply.run({
+        subjectLayerId: subj.id,
+        subjectLayerName: subj.name,
+        subjectLayerKind: subj.kind
+      });
+    });
+    if (res && res.ok === false) {
+      log("warn", "自动摆正失败（不中断流程，继续后续步骤）：" + (res.error || ""));
+      return { ok: true, data: { applied: false, reason: "failed", error: String(res.error || ""), layerId: subj.id } };
+    }
+    return res;
+  }
+
   var FLOW = [
     { key: "cutout", label: "抠图", run: stepCutout },
     { key: "refine", label: "边缘净化", run: stepRefine },
     { key: "cutout", label: "应用蒙版", run: stepApplyMask },
+    // ★ A 档（摆正）：必须排在「背景 / 接地投影」之前 —— 投影方向与背景构图都按摆正后的主体算（PLAN-straighten §4）。
+    { key: "straighten", label: "自动摆正", run: stepStraighten },
     { key: "backdrop", label: "背景", run: stepBackdrop },
     { key: "shadow", label: "接地投影", run: stepShadow },
     { key: "adjust", label: "调色", run: stepAdjust },
@@ -579,6 +665,42 @@ window.Ecom = window.Ecom || {};
       var res = await step.run();
       if (res.ok) log("info", "[" + step.label + "] ok · " + summarize(key, res));
       else log("error", "[" + step.label + "] fail · " + res.error);
+    } finally {
+      busy = false;
+      api.setBusy(false, "");
+    }
+  }
+
+  // 只读探针（摆正）：跑一轮分析 + 应用后回读，只写日志、不改画面。无画面副作用，故与其它处理器同用 busy 守卫。
+  async function onRunProbe() {
+    if (busy) return;
+    var miss = require3("straightenProbe", "run");
+    if (miss) {
+      log("error", "[只读探针] fail · " + miss.error);
+      return;
+    }
+    busy = true;
+    api.setBusy(true, "只读探针：执行中…");
+    try {
+      var res = await call(function () { return window.Ecom.straightenProbe.run(); });
+      if (!res.ok) {
+        log("error", "[只读探针] fail · " + res.error);
+        return;
+      }
+      var d = res.data || {};
+      var s = d.summary || {};
+      var evs = s.events || {};
+      var parts = [];
+      for (var k in evs) {
+        if (Object.prototype.hasOwnProperty.call(evs, k)) parts.push(k + (evs[k] && evs[k].threw ? "=抛错" : "=无异常"));
+      }
+      var rot = s.rotation;
+      log("info", "[只读探针] ok · 日志行=" + ((d.lines || []).length) +
+        "；旋转回读=" + (rot ? (rot.variant + " changed=true " + rot.before + " → " + rot.after) : "未生效") +
+        "；候选（空参，异常无判别力）：" + (parts.length ? parts.join("，") : "（无结果）"));
+      var warns = s.warnings || [];
+      for (var i = 0; i < warns.length; i++) log("warn", "[只读探针] " + warns[i]);
+      log("info", "[只读探针] 本次未在画面上做任何修改（只读调用：activeDoc / getSubjectPixels），完整结论见面板日志与 ecom-debug.log");
     } finally {
       busy = false;
       api.setBusy(false, "");
@@ -788,6 +910,7 @@ window.Ecom = window.Ecom || {};
       on: {
         onRunAll: onRunAll,
         onRunModule: onRunModule,
+        onRunProbe: onRunProbe,
         onRestore: onRestore,
         onStateChange: onStateChange,
         onPickColor: onPickColor,

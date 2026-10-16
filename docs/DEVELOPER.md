@@ -6,6 +6,7 @@
 - 契约（跨模块冻结的签名与数据结构）在 `docs/INTERFACE.md`，本文不重复，只讲"为什么"和"怎么改"。
 - 决策与验收记录在 `docs/PLAN.md`。
 - 描述符取证细节在 `docs/RESEARCH-descriptors.md`（1419 行，本项目最重要的一份原始资料）。
+- 同类开源项目能借鉴什么、什么不能抄（GPL / 无许可边界）在 `docs/RESEARCH-plugins.md`；自动摆正 / 透视矫正的方案存档在 `docs/PLAN-straighten.md`（未实现）。
 - 不想看原理，只想跑起来：看 §7「本地开发循环」。
 
 > **本文所有行号都是 UTF-8 解码后实测的**（`[System.IO.File]::ReadAllLines($fp,[Text.Encoding]::UTF8)`）。别用不带编码参数的 `Get-Content` 去核对——它会给你错的数字，理由见 §0 的陷阱提示。
@@ -429,6 +430,10 @@ applyMedianNoise(DOM)          OK
 # 3. 重装 + 起来
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+**更省事的一条命令**（2026-10-16 加，用户授权装机前直接关 PS）：`powershell -NoProfile -ExecutionPolicy Bypass -File .\reinstall.ps1`
+—— 先让 Photoshop 正常退出（20s 超时后强制结束），再跑 `install.ps1`，最后逐文件比对生效副本的 SHA-256 并打印日志基线行数。
+日常循环用它就够了，不必手动关 PS、也不必再核对哈希。
 
 改完装完，在 PS 里打开面板：**窗口 → 增效工具（Plugins）→ 电商图片制作**。
 面板已经在开的话，**关掉面板再重新打开**才会重新执行 JS —— 没有热重载。

@@ -307,6 +307,7 @@ window.Ecom = window.Ecom || {};
       buildRun();
       buildCutout();
       buildRefine();
+      buildStraighten();
       buildBackdrop();
       buildShadow();
       buildAdjust();
@@ -332,7 +333,7 @@ window.Ecom = window.Ecom || {};
         state.moduleEnabled.export !== false, function (v) {
           fire("onStateChange", { moduleEnabled: mergeModules("export", v) });
         });
-      s.appendChild(el("div", "hint", "顺序：抠图 → 边缘净化 → 应用蒙版 → 背景 → 接地投影 → 调色 → 尺寸构图 → 导出。任一步失败即停止并记录原文错误。"));
+      s.appendChild(el("div", "hint", "顺序：抠图 → 边缘净化 → 应用蒙版 → 自动摆正 → 背景 → 接地投影 → 调色 → 尺寸构图 → 导出。任一步失败即停止并记录原文错误（「自动摆正」是可选步骤：判为跳过 / 变换失败只写日志，不中断流程）。"));
       s.appendChild(el("div", "hint", "不勾选上一项＝一键跑完不导出：停在被处理的文档上，先在 PS 里看效果，满意了再去「导出」区点「导出」。"));
     }
 
@@ -352,6 +353,20 @@ window.Ecom = window.Ecom || {};
       b.addEventListener("click", function () { fire("onRunModule", "cutout"); });
       s.appendChild(row);
       s.appendChild(el("div", "hint", "勾选（默认）：一键流程在「边缘净化」之后执行 PS 的「图层>图层蒙版>应用」—— 蒙版烘焙进像素，图层面板上的蒙版缩览图消失、主体外变成真透明。不勾选：只执行抠图，蒙版照样建好但保持停用，可先用画笔修补，图层面板 Shift+点击蒙版缩略图随时启用。"));
+    }
+
+    function buildStraighten() {
+      var s = sec("自动摆正");
+      inner.cbStraighten = checkboxRow(s, "启用自动摆正（只做小角度微调）", state.moduleEnabled.straighten, function (v) {
+        fire("onStateChange", { moduleEnabled: mergeModules("straighten", v) });
+      });
+      var row = el("div", "row row-actions");
+      var b = button(row, "执行自动摆正");
+      b.addEventListener("click", function () { fire("onRunModule", "straighten"); });
+      s.appendChild(row);
+      s.appendChild(el("div", "hint", "默认关。只处理「拍歪了一点点」的平面产品：主轴角 |θ|<3° 且四边残差、透视偏差都干净时才自动转正。角度由像素自己算，转完重读像素复核；发现转反了会自动反向纠正（方向常量在 src/straighten-apply.js）。"));
+      s.appendChild(el("div", "hint", "落在中间档（3°~15° 或残差不够干净）与「跳过」档（>15°、异形、斜放构图）时一律不动画面，只在日志写明角度与原因 —— 宁可漏转也不误转。"));
+      s.appendChild(el("div", "hint", "只旋转主体层，不裁剪也不缩放：转后四角露出的透明区由后续「背景」步骤盖住。失败只写警告，不中断一键流程。"));
     }
 
     function buildRefine() {
@@ -637,6 +652,10 @@ window.Ecom = window.Ecom || {};
       clr.addEventListener("click", function () {
         while (logBody.firstChild) logBody.removeChild(logBody.firstChild);
       });
+      // 只读探针（摆正）：只写日志、不改画面（后续「一键摆正」的取证前置）
+      var probe = button(row, "探针（只读）", true);
+      probe.title = "只读探针：取像素 → 数学分析 → 探测事件名可用性；只写日志，不改画面";
+      probe.addEventListener("click", function () { fire("onRunProbe"); });
       s.appendChild(row);
     }
 
@@ -840,6 +859,7 @@ window.Ecom = window.Ecom || {};
       if (inner.cbCutout) inner.cbCutout.checked = !!state.moduleEnabled.cutout;
       if (inner.cbAutoMask) inner.cbAutoMask.checked = state.cutout ? state.cutout.autoMask !== false : true;
       if (inner.cbRefine) inner.cbRefine.checked = !!state.moduleEnabled.refine;
+      if (inner.cbStraighten) inner.cbStraighten.checked = !!state.moduleEnabled.straighten;
       if (inner.cbAutoExport) inner.cbAutoExport.checked = state.moduleEnabled.export !== false;
       if (inner.cbShadow) inner.cbShadow.checked = !!state.moduleEnabled.shadow;
       if (inner.cbCenter) inner.cbCenter.checked = state.compose ? state.compose.center !== false : true;

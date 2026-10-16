@@ -95,7 +95,7 @@ window.Ecom = window.Ecom || {};
         }
       },
       moduleEnabled: {
-        cutout: true, refine: true, backdrop: true, shadow: false,
+        cutout: true, refine: true, straighten: false, backdrop: true, shadow: false,
         adjust: true, compose: true, export: true
       },
       export: { format: "jpg", quality: 12, outputDir: null, overwrite: false, lastDir: null }

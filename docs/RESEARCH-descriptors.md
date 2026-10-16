@@ -239,6 +239,18 @@ t.grow       = function(e,t){return {_obj:"grow",       _target:[i], antiAlias:t
 ```
 **注意**：`selectionModifyEffectAtCanvasBounds` 默认 `false`；设 `true` 时修改只在画布范围内生效。
 
+★★ **真机实测（2026-10-16，本插件 PS 27.1）——取消选区的三种写法谁行谁不行**：
+- `{ _obj:"set", _target:[{_ref:"channel",_property:"selection"}], to:{_enum:"ordinal",_value:"none"} }`（上面 `t.deselect`）
+  ⇒ **可用**（权威写法，app.js 自己的实现）。
+- `{ _obj:"deselect", _target:[{ _ref:"channel", _property:"selection" }] }` ⇒ `batchPlay` 返回 **ok**，
+  但画布上的矩形选区**原样还在**（13:37:52 用户截图）⇒ 静默无效，13:43 改成「多发几种」后仅作为兜底之一。
+- `{ _obj:"deselect", _target:[{ _ref:"document", _enum:"ordinal", _value:"targetEnum" }] }` ⇒ 被**明确拒绝**：
+  `Photoshop 拒绝了描述符：命令"取消选择"当前不可用`（三次重试都拒）。
+- 空矩形（`set selection → rectangle 0,0,0,0`）⇒ ok。
+⇒ 通用教训：**ok ≠ 生效**；清理类动作要「已知写法全发一遍 + 用画布/DOM 回读判定」（本插件用 `photoshop_inspect`
+读 `doc.selection.bounds` 确认 `selection none`）。插件侧落地：`straighten-apply.js deselectDescs()`（4 种依次发）、
+`cutout.js` 链尾补 `set selection→none`。
+
 ### ⚠️ 缺口（必须知道）：「收缩图层蒙版」没有直接 API
 `app.js` 里对图层蒙版的 `set` 只有 `userMaskFeather` 与 `userMaskDensity`，**没有 userMaskContract**（全树 `grep userMask` 只命中 app.js 这两处 + `hasUserMask` 读取）。
 要收缩蒙版本体只能走：**载入蒙版为选区 → 在选区上 `contract` → 重新生成蒙版**（`{_obj:"set", _target:[{_ref:"channel",_enum:"channel",_value:"mask"}], to:{_enum:"ordinal",_value:"none"}}` 载入通道那一步 **本机未取证**）。

@@ -57,6 +57,10 @@ window.Ecom = window.Ecom || {};
     });
     // 只取消选区、绝不 delete：描述符逐字对齐真机 B 组（OK 且 hasUserMask 保持 true）
     chain.push({ _obj: "deselect", _target: [selectionRef()] });
+    // ★ 真机 2026-10-16 13:37:52：上面这条返回 ok，但**画布上的选区原样还在**（静默无效）。app.js 自己的
+    //   deselect 是「把 selection 通道 set 成 ordinal none」（docs/RESEARCH-descriptors.md 取证，偏移 16884）
+    //   ⇒ 再补这一发权威写法（不碰通道，蒙版仍为 true，与上面那条的目的完全一致）。
+    chain.push({ _obj: "set", _target: [selectionRef()], to: { _enum: "ordinal", _value: "none" } });
     return chain;
   }
 

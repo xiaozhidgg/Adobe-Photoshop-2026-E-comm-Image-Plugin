@@ -65,9 +65,12 @@ ps电商图片制作插件\
 ├─ docs\
 │  ├─ PLAN.md                    分诊、环境事实、访谈结论、验收结果、已知局限
 │  ├─ INTERFACE.md               跨模块冻结契约（v2.1）
+│  ├─ DEVELOPER.md               开发者指南（为什么这么做、怎么改）
 │  ├─ RESEARCH-install.md        插件落点实机调研
 │  ├─ RESEARCH-descriptors.md    Action Manager 描述符手册（1419 行）
-│  └─ RESEARCH-host.md           真机探针报告
+│  ├─ RESEARCH-host.md           真机探针报告
+│  ├─ RESEARCH-plugins.md        同类开源插件调研（可借鉴 / 不可借鉴）
+│  └─ PLAN-straighten.md         自动摆正 / 透视矫正方案（未实现，存档）
 └─ verify\                       probe.ps1 / probe*.jsx 与探针输出日志
 ```
 

@@ -386,6 +386,20 @@ window.Ecom = window.Ecom || {};
       if (!lockTried && opts && opts.lockProbeLayerId !== undefined && opts.lockProbeLayerId !== null &&
           /当前不可用|not available|unknown/i.test(String(r.error || ""))) {
         lockTried = true;
+        // ★ 真机 2026-10-16 11:25:48：图层刚被「背景 → 普通层」换掉 id（1 → 2），调用方还拿着旧 id，
+        //   于是 select/transform 全被「命令…当前不可用」挡回，而 isBusy 把这句话当"宿主忙"要退避 8 次（约 34s）。
+        //   旧 id 已经不存在 ⇒ 重试再多次也是同一句错误：直接快速失败，并把"换了 id"这件事写清楚。
+        var probe = layerLockInfo(opts.lockProbeLayerId, opts.lockProbeLayerName);
+        if (!probe.ok) {
+          var replaced = sniffBottomLayer(opts.lockProbeLayerId);
+          var hint = replaced
+            ? ("；文档最底层现在是 id=" + Number(replaced.id) + "「" + String(replaced.name || "?") +
+               "」—— 请重新解析主体层后用新 id 重跑本步")
+            : "";
+          log("error", "排查结论：目标图层 id=" + opts.lockProbeLayerId + " 已不存在（背景层转换/删除会换 id）" + hint);
+          return { ok: false, data: r.data, lockedCause: true,
+            error: r.error + "；排查结论=目标图层 id 已失效（id=" + opts.lockProbeLayerId + "）" + hint };
+        }
         var lk = await ensureUnlocked(opts.lockProbeLayerId, opts.lockProbeLayerName);
         if (lk.ok && lk.data && lk.data.unlocked) {
           log("warn", label + " 被拒的原因不是忙碌，而是【图层被锁】（" +
@@ -420,6 +434,9 @@ window.Ecom = window.Ecom || {};
     var label = opts.label || DEFAULT_COMMAND;
     var list = (descriptors || []).slice();
     if (preserveSelection) {
+      // ★ 陷阱（真机 2026-10-16 13:31:59）：末尾这条 restoreDocumentSelection 会把选区【恢复】回批处理开头那张
+      //   快照 ⇒ 想让「取消选区」真正生效，那一发必须 preserveSelection:false，否则它会把自己抵消掉
+      //   （用户在逐物体摆正后看到矩形选区还亮着，就是这么来的）。
       list.unshift({ _obj: "saveDocumentSelection" });      // 惯例：批处理首尾包选区（手册 G29 / app.js:26888）
       list.push({ _obj: "restoreDocumentSelection" });
     }
@@ -1377,13 +1394,50 @@ window.Ecom = window.Ecom || {};
     }
   }
 
+  // ★ 真机事故（2026-10-16 10:59:45 / 11:19:06 / 11:24:45，用户 b-2.0 图，三次形状完全一致）：
+  //   第一次点击的第一条候选 set **其实生效了** —— 背景层被转成普通层，PS 把它改名「图层 0」、id 1 → 2；
+  //   但同一条命令又回了错误项，且旧 id 的 layerLockInfo 立刻读不到（名字也变了，按名回退也找不到）。
+  //   我的代码既不认成功、又拿着已经不存在的 id=1 重试，于是每条命令都被 PS 用
+  //   「命令"设置"/"选择"/"栅格化"当前不可用」挡回，61s 全灭；用户第二次点击时 findSubjectLayer
+  //   重新解析到 id=2，一切正常 —— 三次事故都是这个形状。
+  //   ⇒ 结论：**背景层转普通层会换 id**。旧 id 读不到 ≠ 还锁着，而是"换人了"，必须重新定位再判断。
+  //   背景层恒在文档最底（DOM 图层表自上而下，最后一项就是它），转换后仍在原位；只有旧 id 消失时才会
+  //   返回这个"接替者"，避免把「图层被删掉」误判成"转换成功"。
+  function sniffBottomLayer(oldLayerId) {
+    try {
+      if (domFindLayerById(oldLayerId)) return null;      // 旧 id 还在 ⇒ 不需要换人
+      var m = mods();
+      var d = m.app && m.app.activeDocument;
+      if (!d || !d.layers || !d.layers.length) return null;
+      var bottom = d.layers[d.layers.length - 1];
+      if (!bottom || String(bottom.id) === String(oldLayerId)) return null;
+      return bottom;
+    } catch (e) { return null; }
+  }
+
   // 锁着就解锁（DOM 写优先，退回描述符），并【回读确认】；读不到锁定状态时放行（不因读数失败挡主流程）。
-  // 返回 { ok, data:{ locked, unlocked, before, after, via } }；解不开时 ok:false 且 error 给人话指引。
-  async function ensureUnlocked(layerId, nameHint) {
+  // 返回 { ok, data:{ locked, unlocked, before, after, via, layerId } }；解不开时 ok:false 且 error 给人话指引。
+  // ★ data.layerId 必须看：背景层转普通层会【换 id】（真机 1 → 2），调用方要改用新 id，否则后续命令
+  //   全打在一个不存在的图层上（真机 2026-10-16 11:24 事故，见 sniffBottomLayer 注释）。
+  // opts.unlockWaitMs：背景层转换时「等到能写」的预算（默认 20000）——真机 11:19 / 11:24 事故见下。
+  async function ensureUnlocked(layerId, nameHint, opts) {
     var info = layerLockInfo(layerId, nameHint);
-    if (!info.ok) return { ok: true, data: { locked: false, unlocked: false, note: info.error } };
-    if (!info.data.locked) return { ok: true, data: { locked: false, unlocked: false, before: info.data } };
+    // 旧 id 读不到：先查是不是「背景层转换换了 id」——是就用新 id 继续（这本身就是"已经解锁"的证据）。
+    if (!info.ok) {
+      var sniff0 = sniffBottomLayer(layerId);
+      if (sniff0) {
+        var newId0 = Number(sniff0.id);
+        log("info", "图层 id=" + layerId + " 已不存在（背景层转换成普通层会换 id）→ 改用文档最底层的 id=" +
+          newId0 + "「" + String(sniff0.name || "?") + "」重新判断锁定状态");
+        layerId = newId0;
+        nameHint = String(sniff0.name || nameHint || "");
+        info = layerLockInfo(layerId, nameHint);
+      }
+    }
+    if (!info.ok) return { ok: true, data: { locked: false, unlocked: false, layerId: layerId, note: info.error } };
+    if (!info.data.locked) return { ok: true, data: { locked: false, unlocked: false, layerId: layerId, before: info.data } };
     var before = info.data;
+    var beforeLayerId = layerId;      // 供日志说明"换了 id"
 
     // 途径 1：DOM 直接写（DOM 对锁定状态可写；必须包在 modal 作用域内）
     var domErr = null;
@@ -1399,6 +1453,11 @@ window.Ecom = window.Ecom || {};
         if (before.positionLocked) l.positionLocked = false;
         if (before.transparencyLocked) l.transparencyLocked = false;
         if (before.pixelsLocked) l.pixelsLocked = false;
+        // ★ 真机 2026-10-16 10:46:31（用户 b-2.0 图）：不透明图（JPG / 无 alpha 的 PNG）打开时只有一层
+        //   「背景」，而背景层的「锁」是身份、不是那四个锁标志 —— 上面四个都写 false 也不动它，
+        //   回读仍是 locked（background=true），随后变换被拒「命令"变换"当前不可用」。
+        //   DOM 也没有可写的身份开关（UXP 的 photoshop.js 里既无 isBackgroundLayer 也无 allLocked），
+        //   ⇒ 背景层只能走下面「途径 2」前置的描述符转换。
       });
     } catch (eDom) { domErr = errText(eDom); }
 
@@ -1406,7 +1465,116 @@ window.Ecom = window.Ecom || {};
     if (after.ok && after.data && !after.data.locked) {
       log("info", "图层「" + (before.name || nameHint) + "」处于锁定状态（" + before.why.join("、") +
         "）→ 已解锁（DOM 途径）后继续");
-      return { ok: true, data: { locked: true, unlocked: true, via: "dom", before: before, after: after.data } };
+      return { ok: true, data: { locked: true, unlocked: true, via: "dom", before: before, after: after.data, layerId: layerId } };
+    }
+
+    // 途径 2 前置：背景层的「锁」是身份，不是那四个锁标志（layerLocking=none 对它无效）。
+    //   转换＝把「背景」改名成普通层，等价菜单「图层 > 新建 > 背景图层」/ 双击图层名：就地变普通层、id 不变。
+    //   证据（PS 27.1 真机，dsh photoshop_run_jsx，2026-10-16，verify/bg-unlock-probe*.jsx）：
+    //     ① 锁定的背景层上 transform 抛「发生了常规 Photoshop 错误。该功能可能无法在这个版本中使用。- 命令"变换"当前不可用。」
+    //     ② charIDToTypeID("setd") 的 typeIDToStringID 得 "set"（stringIDToTypeID("set") 与它同 ID；
+    //        写成 "setd" 会被新铸成 4065 号假事件）；键 T   =to、Lyr =layer、Nm  =name
+    //     ③ set + to={_obj:"layer",name}（_id 引用或 Ordn/Trgt 引用都行）执行后 isBackgroundLayer true→false、
+    //        positionLocked true→false；放进 doc.suspendHistory(...) 里同样成功 ⇒ 历史挂起不是失败原因
+    //     ④ 随后同一 transform 生效（300×200 转 5° → bounds -8,-13,308,213）
+    //   但同一条描述符从插件（UXP batchPlay）发的真机结果是「命令"设置"当前不可用」（10:59:45），
+    //   而这句话在本项目也等于「宿主忙 / 描述符通道锁死」（见本文件 341、362、1013 行），所以：
+    //   先给足重试，再按候选链逐个换形态；每换一条都【回读确认】——绝不把"命令没报错"当成功。
+    var bgErr = null;
+    if (before.background) {
+      // ★ 真机 2026-10-16 11:19:06-11:19:31（用户 b-2.0 图）：刚打开的文档在 ~20s 内【整条写通道都不可用】——
+      //   set / select / rasterizeLayer 被同一句「命令"…"当前不可用」全灭，五行候选一条都没跑成；而 1 秒后
+      //   （用户第二次点击、图层已变「图层 0」）同样的写命令立刻成功。⇒ 不是解锁命令的形态写错了，是宿主还
+      //   没就绪。现有 waitHostIdle 用的是【读】探针，而这一次读一直成功、写一直失败 ⇒ 读通不等于写通。
+      //   ⇒ 改成【轮询到能写再发】：每轮把候选链各试一次，只要失败是「忙 / 当前不可用」型就等 700ms 再来，
+      //     直到成功或超时（opts.unlockWaitMs，默认 60s）；已判为「非忙」型失败（命令通过但没生效）的候选
+      //     不再重试。绝不把"命令没报错"当成功 —— 每一条都靠 layerLockInfo 回读确认。
+      var waitMs = (opts && typeof opts.unlockWaitMs === "number") ? opts.unlockWaitMs : 20000;
+      var keepName = String(before.name || nameHint || "图层 0");
+      // PS 的规则是【改掉背景层的名字才算转成普通层】（用户手动双击解锁就是改名）。传回原名「背景」即使命令
+      // 被接受也不会转换 ⇒ 名必须变，用 PS 自己给转换后的默认名「图层 0」。
+      var convName = /^\s*(背景|背景图层|Background|Background Layer)\s*$/i.test(keepName) ? "图层 0" : keepName;
+      var idRef = { _ref: "layer", _id: layerId };
+      var setIdArray = { _obj: "set", _target: [idRef], to: { _obj: "layer", name: convName } };
+      var bgCands = [
+        // ① ExtendScript 里已验证成立的形态（verify/bg-unlock-probe*.jsx：setd + Lyr 引用 → isBg true→false）
+        { why: "set+数组引用", list: [setIdArray] },
+        // ② Adobe 自己 UXP 助手 t.set 的形态（_target 是对象引用，不是数组）
+        { why: "set+对象引用", list: [{ _obj: "set", _target: idRef, to: { _obj: "layer", name: convName } }] },
+        // ③ transform 的教训（compose.js:29）：只给 _target 的层命令可能被静默丢掉 → 先选中它
+        { why: "先选中再set", list: [{ _obj: "select", _target: [idRef] }, setIdArray] },
+        // ④ Adobe rename 助手的复合引用形态（property/title of layer）
+        { why: "set+property引用", list: [{ _obj: "set", _target: { _ref: [{ _ref: "property", _property: "title" }, idRef] }, to: convName }] },
+        // ⑤ 本项目已真机验证过的 rasterizeLayer（cutout.js:33 的对象形态；背景层本来就是像素层，风险最小）
+        { why: "rasterizeLayer", list: [{ _obj: "rasterizeLayer", _target: idRef }] }
+      ];
+      var tried = [];
+      var dead = {};          // 非忙型失败的候选（命令通过但没生效）→ 不再重试
+      var bgT0 = Date.now(), bgLastLog = 0, rounds = 0;
+      while (true) {
+        rounds++;
+        var sawBusy = false;
+        for (var ci = 0; ci < bgCands.length; ci++) {
+          if (dead[ci]) continue;
+          var cand = bgCands[ci];
+          var rCand = await run(cand.list, {
+            history: "suspend",
+            label: "电商图片制作 · 背景层转普通层（" + cand.why + "）",
+            busyRetries: 1, busyBudgetMs: 8000
+          });
+          var afterBg = layerLockInfo(layerId, nameHint);
+          // ★ 转换命令会【换 id】（真机 1 → 2）：旧 id 一消失就说明它已经生效 —— 立刻换到新 id 判断，
+          //   绝不拿着死 id 继续重试（那会被 PS 用「命令…当前不可用」挡到天荒地老：真机 11:24 白等 61s）。
+          var sniffed = null;
+          if (!afterBg.ok) {
+            sniffed = sniffBottomLayer(layerId);
+            if (sniffed) {
+              var newId = Number(sniffed.id);
+              log("info", "转换命令发出后旧 id=" + layerId + " 已不存在 → 按文档最底层改用 id=" + newId +
+                "「" + String(sniffed.name || "?") + "」（PS 回了错误项，但图层确实换了 ⇒ 以状态为准）");
+              layerId = newId;
+              nameHint = String(sniffed.name || nameHint || "");
+              afterBg = layerLockInfo(layerId, nameHint);
+            }
+          }
+          if (rCand.ok && afterBg.ok && afterBg.data && afterBg.data.locked) {
+            // 命令通过了却还读到锁 → 可能只是 DOM 还没结算，等一下再读一次（不把缓存当真相）
+            await sleep(150);
+            afterBg = layerLockInfo(layerId, nameHint);
+          }
+          if (afterBg.ok && afterBg.data && !afterBg.data.locked) {
+            log("info", "图层「" + (before.name || nameHint) + "」是锁定的背景层（" + before.why.join("、") +
+              "）→ 已转成普通层（" + cand.why + "，第 " + rounds + " 轮" +
+              (String(layerId) === String(beforeLayerId) ? "" : "；图层 id " + beforeLayerId + " → " + layerId) + "）后继续");
+            return { ok: true, data: { locked: true, unlocked: true, via: "background->layer(" + cand.why + ")",
+              before: before, after: afterBg.data, layerId: layerId } };
+          }
+          if (!afterBg.ok && !sniffed) {
+            // 图层是真没了（既不是"换 id"、也没有接替的底层）⇒ 拿它重试再多次都是同一句错误，判死这条候选
+            var whyGone = cand.why + "：目标图层 id=" + layerId + " 已不存在且没有接替的底层";
+            if (tried.indexOf(whyGone) < 0) tried.push(whyGone);
+            dead[ci] = true;
+            continue;
+          }
+          var why = cand.why + "：" + (rCand.ok
+            ? ("命令通过但回读仍锁定" + ((afterBg.ok && afterBg.data) ? "（" + afterBg.data.why.join("、") + "）" : ""))
+            : ("调用失败：" + rCand.error));
+          if (tried.indexOf(why) < 0) tried.push(why);
+          if (!rCand.ok && isBusy(String(rCand.error || ""))) sawBusy = true; else dead[ci] = true;
+        }
+        var bgWaited = Date.now() - bgT0;
+        if (!sawBusy || bgWaited >= waitMs) break;
+        if (bgWaited - bgLastLog >= 5000) {
+          bgLastLog = bgWaited;
+          log("info", "宿主写通道尚未就绪：已等 " + Math.round(bgWaited / 1000) + "s（上限 " +
+            Math.round(waitMs / 1000) + "s），继续轮询…");
+        }
+        await sleep(700);
+      }
+      if (rounds > 1) {
+        tried.unshift("轮询 " + rounds + " 轮、共 " + Math.round((Date.now() - bgT0) / 1000) + "s 仍失败");
+      }
+      bgErr = tried.join("；");
     }
 
     // 途径 2：描述符 set layerLocking = none（同样回读确认，不靠"命令没报错"当成功）
@@ -1426,6 +1594,7 @@ window.Ecom = window.Ecom || {};
     }
 
     var detail = [];
+    if (bgErr) detail.push("背景层转换：" + bgErr);
     if (domErr) detail.push("DOM：" + domErr);
     if (!r.ok) detail.push("描述符：" + r.error);
     if (after2.ok && after2.data && after2.data.locked) detail.push("回读仍为锁定（" + after2.data.why.join("、") + "）");
@@ -1706,6 +1875,10 @@ window.Ecom = window.Ecom || {};
 
       var alphaMask = null;
       var maskCoverage = null;
+      var maskFrameNote = "无蒙版";
+      // 像素网格覆盖的文档范围（null ＝ 按整幅画布等比）。逐物体摆正要把网格里的物体包围盒换算回文档坐标，
+      // 换算依据就是这里定下的取景框。
+      var pixelFrame = null;
       var layerRes = await activeLayer();
       if (layerRes.ok) {
         var cov = await getUserMaskCoverage(layerRes.data.id);
@@ -1713,18 +1886,32 @@ window.Ecom = window.Ecom || {};
           maskCoverage = cov.data.coverage;
           var maskRead = await readUserMask(layerRes.data.id);
           if (maskRead.ok) {
-            alphaMask = resampleMask(maskRead.data, w, h);
+            // ★ 缺陷 3（2026-10-16 真机 12:49 + 地面真值交叉验证）：带 layerID 的 getPixels 返回的是
+            //   【该图层 bounds 区域】的缩放像（真机：图层 bounds 1412×2316 → 624×1024；而同一文档不带
+            //   layerID 是 461×1024＝文档比例），readUserMask 的 gray 却是【整幅画布】1844×4096。
+            //   把画布蒙版直接塞进图层网格＝非等比拉伸：x 624/1844=0.3384 vs y 1024/4096=0.25
+            //   ⇒ 竖直长轴的 tan 被放大 1.354 倍，实测把真值 0.66°/2.04° 抬成 0.95°/2.93°、
+            //   逐物体极差/2 从 0.69（该转）翻成 0.99（不转）。⇒ 蒙版必须先裁到与像素同一取景框。
+            var fr = await maskResampleFrame(layerRes.data.id, w, h, docW, docH, maskRead.data.width, maskRead.data.height);
+            maskFrameNote = fr.note;
+            pixelFrame = fr.frame;
+            if (fr.warn) log("warn", "蒙版取景框：" + fr.warn);
+            alphaMask = resampleMask(maskRead.data, w, h, fr.frame);
+            log("info", "蒙版取景框=" + fr.note + "（像素网格 " + w + "x" + h + "，文档 " + docW + "x" + docH +
+              "，蒙版缓冲 " + maskRead.data.width + "x" + maskRead.data.height + "）");
           } else {
+            maskFrameNote = "蒙版读取失败";
             log("warn", "蒙版读取失败，alphaMask 置 null：" + maskRead.error);
           }
         } else if (!cov.ok) {
+          maskFrameNote = "蒙版状态未知";
           log("warn", "蒙版状态未知，alphaMask 置 null：" + cov.error);
         }
       }
 
       probe("getPixels.probe", {
         pixels: w + "x" + h, channels: channels, docSize: docW + "x" + docH,
-        hasAlphaMask: !!alphaMask, maskCoverage: maskCoverage
+        hasAlphaMask: !!alphaMask, maskCoverage: maskCoverage, maskFrame: maskFrameNote
       });
 
       // 蒙版分辨率可能不等于像素分辨率 → 最近邻重采样到像素网格，保证 alphaMask.length === w*h
@@ -1737,6 +1924,7 @@ window.Ecom = window.Ecom || {};
           alphaMask: alphaMask,
           channels: channels,
           alphaMaskCoverage: maskCoverage,
+          pixelFrame: pixelFrame,
           docWidth: docW,
           docHeight: docH
         }
@@ -1750,17 +1938,67 @@ window.Ecom = window.Ecom || {};
     }
   }
 
-  function resampleMask(mask, w, h) {
+  // ★ 缺陷 3 配套（2026-10-16）：判断像素网格覆盖的是【整幅画布】还是【该图层 bounds】，给出蒙版取景框。
+  // 判据是比例、不是假设：把实际像素宽 w 与两种取景框按同一高 h 等比推算的宽相比，2% 内即命中。
+  // 两条都不命中 ⇒ 退回整幅画布并明写 warn —— 宁可回到旧行为，也不静默按错取景框裁剪。
+  async function maskResampleFrame(layerId, w, h, docW, docH, maskW, maskH) {
+    if (maskW !== docW || maskH !== docH) {
+      return {
+        frame: null, note: "整幅画布",
+        warn: "蒙版缓冲 " + maskW + "x" + maskH + " 与文档 " + docW + "x" + docH +
+          " 不一致，取景框坐标没有依据，退回整幅画布（角度可能被拉伸）"
+      };
+    }
+    var expDoc = Math.max(1, Math.round(docW * (h / docH)));
+    if (Math.abs(w - expDoc) <= Math.max(1, expDoc * 0.02)) {
+      return { frame: null, note: "整幅画布（像素网格 " + w + "x" + h + " ≈ 文档等比 " + expDoc + "x" + h + "）" };
+    }
+    var lb = await layerBounds(layerId);
+    if (!lb.ok) {
+      return {
+        frame: null, note: "整幅画布",
+        warn: "图层边界读取失败（" + lb.error + "），无法判断像素网格取景框，退回整幅画布"
+      };
+    }
+    var expLb = Math.max(1, Math.round(lb.data.width * (h / lb.data.height)));
+    if (Math.abs(w - expLb) <= Math.max(1, expLb * 0.02)) {
+      return {
+        frame: { left: lb.data.left, top: lb.data.top, right: lb.data.right, bottom: lb.data.bottom },
+        note: "图层 bounds " + lb.data.width + "x" + lb.data.height + "（L" + lb.data.left + " T" + lb.data.top +
+          " R" + lb.data.right + " B" + lb.data.bottom + "，来源 " + lb.data.source + "；像素网格 " + w + "x" + h +
+          " ≈ 该框等比 " + expLb + "x" + h + "）"
+      };
+    }
+    return {
+      frame: null, note: "整幅画布",
+      warn: "像素网格 " + w + "x" + h + " 与文档等比（" + expDoc + "x" + h + "）和图层 bounds 等比（" + expLb + "x" + h +
+        "）都不符 ⇒ 蒙版基准可能被拉伸，已退回整幅画布"
+    };
+  }
+
+  // frame 非空时先裁到该矩形（文档坐标）再重采样：蒙版缓冲覆盖整幅画布，而带 layerID 的像素网格
+  // 只覆盖图层 bounds，直接缩放会把竖直长轴的角度按 x/y 比例放大（缺陷 3）。
+  function resampleMask(mask, w, h, frame) {
     var mw = mask.width;
     var mh = mask.height;
     var src = mask.gray;
+    var sx0 = 0;
+    var sy0 = 0;
+    var sw = mw;
+    var sh = mh;
+    if (frame) {
+      sx0 = Math.max(0, Math.min(mw - 1, frame.left));
+      sy0 = Math.max(0, Math.min(mh - 1, frame.top));
+      sw = Math.max(1, Math.min(mw, frame.right) - sx0);
+      sh = Math.max(1, Math.min(mh, frame.bottom) - sy0);
+    }
     var out = new Uint8Array(w * h);
     for (var y = 0; y < h; y++) {
-      var sy = Math.min(mh - 1, Math.floor((y + 0.5) * mh / h));
+      var sy = sy0 + Math.min(sh - 1, Math.floor((y + 0.5) * sh / h));
       var rowSrc = sy * mw;
       var rowDst = y * w;
       for (var x = 0; x < w; x++) {
-        var sx = Math.min(mw - 1, Math.floor((x + 0.5) * mw / w));
+        var sx = sx0 + Math.min(sw - 1, Math.floor((x + 0.5) * sw / w));
         out[rowDst + x] = src[rowSrc + sx];
       }
     }
