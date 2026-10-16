@@ -8,7 +8,7 @@ output/
 docs/
 verify/
 
-# 本机临时文件与日志
+# 本地临时文件与日志
 *.log
 Thumbs.db
 .DS_Store
