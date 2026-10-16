@@ -93,6 +93,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 安装位置：`%APPDATA%\Adobe\UXP\Plugins\External\com.ecom.psimage\`；卸载时该目录被改名为 `com.ecom.psimage.bak-<日期时间>`（**保留备份，不直接删除**）。卸载**不会**关闭开发者模式；要关请在 PS 里：**编辑 → 首选项 → 增效工具** → 取消勾选「启用开发人员模式」。
 
+## 更新到新版本
+
+**不用先卸载**，覆盖安装即可：
+
+1. **完全退出 Photoshop**（安装脚本会自己检查，没退出会拒绝写入）。
+2. 从 [Releases](https://github.com/xiaozhidgg/Adobe-Photoshop-2026-E-comm-Image-Plugin/releases) 下载新版本 zip，解压后**双击 `一键安装.bat`**（等价于命令行再跑一次 `install.ps1`）。
+3. 重启 Photoshop，面板里就是新版本。
+
+- 安装脚本**幂等**：覆盖前会把你当前的插件目录改名备份为 `com.ecom.psimage.bak-<日期时间>`，想回退就把备份目录名改回 `com.ecom.psimage`（先退出 PS）。
+- **预设、面板设置、日志不会被清**（它们存在 `%APPDATA%\Adobe\UXP\PluginsStorage\...` 里，安装只替换插件本体）。
+- 确认当前版本：看 Release 页面的标签，或 `plugin\manifest.json` 里的 `version`。
+
 ## 版本 / 下载
 
 打包版本与更新说明见 GitHub Releases：<https://github.com/xiaozhidgg/Adobe-Photoshop-2026-E-comm-Image-Plugin/releases>
