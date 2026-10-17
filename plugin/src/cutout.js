@@ -174,7 +174,7 @@ window.Ecom = window.Ecom || {};
       if (r.ok) {
         method = "mask";
         ps.log("info", "抠图主路：图层「" + subject.name + "」已按选区删背景并建好图层蒙版（按设置" +
-          (opts.autoMask === false ? "随后停用" : "并启用") + "）");
+          (opts.autoMask === false ? "保持可编辑、不烘焙" : "随后烘焙进像素") + "）");
       } else {
         ps.log("warn", "抠图主路（选区+蒙版）被拒，改用 removeBackground 兜底：" + r.error);
       }
@@ -304,21 +304,15 @@ window.Ecom = window.Ecom || {};
         }
       }
 
-      // ★ 面板开关：抠图链【总是】建蒙版；未勾选时只把刚建好的蒙版停用（非破坏性，蒙版仍在）。
-      //   用户原话：「不勾选就是只执行抠图，扣完图不是会新建一个蒙版吗，如果勾选了选项就自动应用这个蒙版」。
-      var maskEnabled = opts.autoMask === false ? false : true;
-      if (!maskEnabled) {
-        var disRes = await setMaskEnabled(ps, subject.id, false);
-        if (!disRes.ok) {
-          maskEnabled = true;
-          ps.log("warn", "按设置要停用图层蒙版，但宿主拒绝了（蒙版仍在且为启用状态）：" + disRes.error +
-            "；可自行在图层面板 Shift+点击蒙版缩略图停用");
-        } else {
-          ps.log("info", "抠图完成：图层「" + subject.name + "」的蒙版已按设置【停用】（未勾选「自动应用蒙版」）。" +
-            "蒙版本身保留，图层面板 Shift+点击蒙版缩略图即可随时重新启用。");
-          ps.log("warn", "提醒：蒙版停用期间图层是【整层不透明】的，后续「边缘净化以外的步骤」（背景/投影/居中/调色统计）会按整张画布算，" +
-            "不是按抠出的主体算。需要它们按抠图结果算，请勾选「抠图后自动应用蒙版」。");
-        }
+      // ★ 面板开关只决定【要不要把蒙版烘焙进像素】，绝不改变蒙版的启用状态。
+      //   用户 m04531 原话：「没勾选应用蒙版只是指烘焙，而不是关闭蒙版」—— 之前这里会 setMaskEnabled(false)，
+      //   抠完图图层面板上蒙版打叉、画面还是整张原图，属于把「不烘焙」错做成了「关闭蒙版」。
+      //   现在：蒙版一律建好并保持启用（立刻能看到抠图效果、可随时用画笔修补），烘焙与否交给
+      //   index.js 的 stepApplyMask（它按同一个开关跳过）。
+      var bakeBySetting = opts.autoMask !== false;
+      if (!bakeBySetting) {
+        ps.log("info", "抠图完成：图层「" + subject.name + "」的蒙版已建好并【保持启用】，按设置不烘焙进像素" +
+          "（蒙版缩览图可见、可直接用画笔修补）；需要烘焙时勾选「应用图层蒙版」，或手动执行「图层>图层蒙版>应用」");
       }
 
       // ★ 第 7 轮（用户 m02731「还是无法检测蒙版」）：蒙版状态在这台机上就是读不稳（忙碌期整层 get 会被拒），
@@ -374,25 +368,23 @@ window.Ecom = window.Ecom || {};
           ps.log("warn", "蒙版状态回读失败后等宿主空闲也超时（" + idle2.error + "）→ 面板按「未确认」显示");
         }
       }
-      if (maskEnabled) {
-        if (ver.ok && ver.data.hasMask && ver.data.maskEnabled !== false) {
-          maskVerified = true;
-          verifyNote = ver.data.coverage === null ? "（蒙版已确认存在，覆盖率未知）" : "（已回读确认）";
-        } else {
-          verifyNote = "（回读不到蒙版状态：" + ((ver.ok ? "整层 get 报无蒙版" : ver.error) || "宿主仍忙") + "）";
-        }
-      } else if (ver.ok && ver.data.maskEnabled === false) {
+      if (ver.ok && ver.data.hasMask) {
         maskVerified = true;
-        verifyNote = "（已回读确认停用）";
+        if (ver.data.maskEnabled === false) {
+          verifyNote = "（蒙版存在但处于停用状态：请在图层面板点一下蒙版缩览图启用）";
+        } else {
+          verifyNote = ver.data.coverage === null ? "（蒙版已确认存在，覆盖率未知）" : "（已回读确认启用）";
+        }
       } else {
-        verifyNote = "（无法确认停用是否生效：" + (ver.ok ? "回读仍显示有蒙版" : ver.error) + "）";
+        verifyNote = "（回读不到蒙版状态：" + ((ver.ok ? "整层 get 报无蒙版" : ver.error) || "宿主仍忙") + "）";
       }
       if (!maskVerified) {
         ps.log("warn", "抠图链已完成，但蒙版状态回读不到" + verifyNote + "→ 面板按「待确认」显示；请直接看图层面板上的蒙版缩览图。");
       }
       ps.log("info", "抠图完成：图层「" + subject.name + "」蒙版非零占比=" +
         (coverage === null ? "未知（读数失败，按成功继续）" : coverage.toFixed(4)) +
-        "，蒙版已应用=" + (maskEnabled ? (maskVerified ? "是" : "待确认") : (maskVerified ? "否（已停用）" : "否（待确认）")) +
+        "，蒙版=" + (maskVerified ? "已启用" : "待确认") +
+        "，烘焙=" + (bakeBySetting ? "交给下一步「应用蒙版」" : "按设置跳过（保持可编辑）") +
         verifyNote +
         "（method=" + method + (usedFallback ? "，已回退 sampleAllLayers:true" : "") + "）");
       return {
@@ -401,8 +393,9 @@ window.Ecom = window.Ecom || {};
           layerName: subject.name,
           layerId: subject.id,
           hasMask: maskVerified ? true : null,
-          maskApplied: maskVerified ? maskEnabled : null,
-          maskEnabled: maskEnabled,
+          maskApplied: maskVerified ? true : null,   // 蒙版是否已启用（不是「是否已烘焙」）
+          maskEnabled: true,
+          bakeBySetting: bakeBySetting,
           maskVerified: maskVerified,
           maskVerifyNote: verifyNote,
           method: method,
@@ -451,6 +444,38 @@ window.Ecom = window.Ecom || {};
         return { ok: true, data: { applied: false, feather: 0, hadMask: true } };
       }
 
+      // ★ 真机 2026-10-17 17:37 事故：抠图区取消勾选「应用图层蒙版」时，抠图留下的蒙版是【停用】状态
+      //   （图层面板上打着叉），而 PS 对停用蒙版拒绝 set userMaskFeather（命令"设置"当前不可用）；
+      //   这条 set 的重试预算是 40 次 / 3 分钟，于是一键流程看起来「卡死」（日志里连续 12 次拒绝）。
+      //   ⇒ 先判一次蒙版开关：停用就「临时启用 → 写羽化 → 停用回去」（羽化是蒙版属性，停用只是显隐）；
+      //     判不出来（PS 仍忙 / 读不到）就照旧走长预算重试，不改变原来的行为。
+      var maskDisabled = false;
+      try {
+        var st = await ps.hasUserMask(subject.id, REFINE_BUSY_BUDGET_MS, subject.name);
+        if (st && st.ok && st.data && st.data.hasMask && st.data.maskEnabled === false) {
+          maskDisabled = true;
+          if (typeof st.data.layerId === "number" && st.data.layerId !== subject.id) subject.id = st.data.layerId;
+          ps.log("info", "边缘净化：图层「" + subject.name + "」的蒙版处于停用状态（抠图区未勾选「应用图层蒙版」）");
+        } else if (!st || !st.ok) {
+          ps.log("warn", "边缘净化：读不到蒙版开关（" + String((st && st.error) || "unknown") +
+            "）→ 照常尝试羽化（若蒙版是停用状态，PS 会拒这条 set）");
+        }
+      } catch (eSt) {
+        ps.log("warn", "边缘净化：读取蒙版开关失败（" + (eSt && eSt.message ? eSt.message : eSt) + "）→ 照常尝试羽化");
+      }
+      if (maskDisabled) {
+        var en = await setMaskEnabled(ps, subject.id, true);
+        if (!en || !en.ok) {
+          return {
+            ok: false,
+            error: "图层「" + subject.name + "」的蒙版是停用状态（图层面板上打叉），临时启用失败：" +
+              String((en && en.error) || "unknown") +
+              " —— 羽化写不进去。请在图层上点一下蒙版缩览图先启用，或勾选「应用图层蒙版」"
+          };
+        }
+        ps.log("info", "边缘净化：已临时启用蒙版写羽化，写完会按原状停用回去");
+      }
+
       var r = await ps.run([{
         _obj: "set",
         _target: [{ _ref: "layer", _id: subject.id }],
@@ -460,8 +485,21 @@ window.Ecom = window.Ecom || {};
         // ★ 真机 13:56 取证：大图（4080x1836）抠图链跑完，PS 仍会忙 40s 以上 —— 默认 8 次重试（约 25s）用尽后
         //   报「命令"设置"当前不可用」→ 整条一键流程停下（日志「已停止后续步骤（边缘净化 失败）」）。
         //   羽化是一条 set，重试代价只是等待，所以给它 40 次 / 3 分钟：宁等不误停。
-        busyRetries: 40, busyBudgetMs: 180000
+        //   但「蒙版被停用」不是忙，重试再多也没用（17:37 就是在这白等 3 分钟）⇒ 那条路给短预算。
+        busyRetries: maskDisabled ? 4 : 40,
+        busyBudgetMs: maskDisabled ? 20000 : 180000
       });
+
+      if (maskDisabled) {
+        var dis = await setMaskEnabled(ps, subject.id, false);
+        if (!dis || !dis.ok) {
+          ps.log("warn", "边缘净化：羽化后把蒙版停用回去失败（" + String((dis && dis.error) || "unknown") +
+            "）—— 蒙版现在是启用状态，请在图层面板手动停用");
+        } else if (r && r.ok) {
+          ps.log("info", "边缘净化：羽化完成，蒙版已按原状停用回去");
+        }
+      }
+
       if (!r.ok) return { ok: false, error: r.error };
 
       ps.log("info", "边缘净化：图层「" + subject.name + "」蒙版羽化 " + featherPx + "px");

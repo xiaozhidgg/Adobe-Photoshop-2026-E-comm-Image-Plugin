@@ -219,8 +219,9 @@ window.Ecom = window.Ecom || {};
         ? (Math.round(Number(d.alphaCoverage) * 1000) / 10 + "%")
         : "未测出";
       var t2 = "图层「" + (d.layerName || "?") + "」已抠图（主体像素占比 " + alphaTxt + (d.alphaSource === "mask" ? "，按蒙版像素" : "") + "）";
-      if (d.maskVerified) t2 += "；蒙版=" + (d.maskApplied === false ? "已建好但已停用" : "已应用");
-      else t2 += "；蒙版状态未能回读确认（不影响抠图结果）";
+      if (d.maskVerified) {
+        t2 += "；蒙版=已启用" + (d.bakeBySetting === false ? "（按设置不烘焙，可继续编辑）" : "（下一步烘焙进像素）");
+      } else t2 += "；蒙版状态未能回读确认（不影响抠图结果）";
       t2 += "；method=" + (d.method || "?") + (d.usedFallback ? "（含回退）" : "");
       return t2;
     }

@@ -783,13 +783,18 @@ window.Ecom.straightenApply.run({ subjectLayerId, subjectLayerName, subjectLayer
 | 19 | 「有蒙版了还在检测」（抠图成功后长时间转圈） | 抠图完成后我立刻去读蒙版状态：真机 17:58:31→17:59:17 的 45s 内被拒 **71 次**（每次都被强制包进 modal），而**上限一到、紧接着的一次直接 batchPlay 就成功了** | ① 重试不再强制 modal；② 600ms 硬捶改递增退避；③ **不再为这条诊断信息等待**：抠图链 2s、边缘净化 6s 上限，超时按「未知」继续 | 真机日志 71 条 `命令"获取"当前不可用` + 上限之后第一次即成功（同一秒「边缘净化」的整层 get 也成功） |
 | 20 | 一键仍卡在抠图；调色报「主体统计失败」 | 真机 `imaging.getPixels` 返回 `{imageData: <function>, sourceBounds, level}` —— **`imageData` 是方法不是对象**（要调一次才给出 ImageData）；旧代码只把 object 当像素候选 | `extractPixelBuffer` 三种形态全认（对象／函数：先 `new`、再 `call()` 绑父对象／类构造器）；尺寸判定改成「候选尺寸 × 通道数必须恰好 3 或 4 且长度整除」的验证式（返回自省 → 按 targetSize+文档尺寸推算 → sourceBounds） | 真机日志 `探测 getPixels.keys = imageData,sourceBounds` → `已试[self{无getData} / sourceBounds{无getData}]` → 调色整条判失败 |
 
-### v7 面板开关「抠图后自动应用蒙版」的语义（按用户口径）
+### v7 面板开关「抠图后应用图层蒙版」的语义（按用户口径）
 
-用户原话：「不勾选就是只执行抠图，扣完图不是会新建一个蒙版吗，如果勾选了选项就自动应用这个蒙版」。
+用户原话一：「不勾选就是只执行抠图，扣完图不是会新建一个蒙版吗，如果勾选了选项就自动应用这个蒙版」。
+用户原话二（2026-10-17 修正，m04531）：「扣完图蒙版是禁用状态，我要的是没勾选应用蒙版只是指烘焙，而不是关闭蒙版」。
 
-- 抠图链**只有一种形状**：`select → rasterize → autoCutout / removeBackground → (contract) → (feather) → make(revealSelection) → deselect`。面板开关不改变这条链。
-- **勾选**（默认）：链跑完即结束 —— 蒙版已建且**启用**，主体外透明。
-- **不勾选**：链照跑（蒙版照样建），链尾追加一次 `{_obj:"set",_target:[{_ref:"layer",_id}],to:{_obj:"layer",userMaskEnabled:false}}` —— 把刚建好的蒙版**停用**（非破坏性：蒙版仍在，Shift+点击缩略图可随时启用）。整层 set 被拒时自动改用「目标 = mask 通道」的回退形式。
-- ❗这里**只用 set 一个布尔，绝不 delete** —— 第 17 行那条 `delete` 教训。
-- 停用期间图层整层不透明，`cutout.remove` 会额外写一条 warn，提醒后续步骤（背景／投影／居中／调色统计）会按整张画布算，而不是按抠出的主体算。
-- 证据状态：`UsrM` ↔ `userMaskEnabled` 的字符/字符串 ID 对应已在 `docs/DEVELOPER.md:270` 与 `本地取证材料 RESEARCH-host.md:223`（`UsrM | 1433629261 | userMaskEnabled | ✅`）取证；无蒙版时该键**不存在**（`本地取证材料 RESEARCH-host.md:562`）。但 **set 方向尚未在真机上验证通过**，两种形式都留了回退，等真机日志给结论。
+**最终语义：不勾选＝只不烘焙，蒙版一律建好并保持启用。**
+
+- 抠图链**只有一种形状**：`select → rasterize → autoCutout / removeBackground → (contract) → (feather) → make(revealSelection) → deselect`。面板开关不改变这条链，**也不改变蒙版的启用状态**。
+- 两种模式都结束于「蒙版已建、已启用、主体外透明」；差别只在之后的「应用蒙版」步骤：
+  - **勾选**（默认）：`cutout.remove` 返回 `bakeBySetting:true`，一键流程的「应用蒙版」步骤执行 `图层>图层蒙版>应用`，蒙版烘焙进像素（缩览图消失）。
+  - **不勾选**：返回 `bakeBySetting:false`，`stepApplyMask()` 直接跳过烘焙（`reason:"disabled-by-setting"`），蒙版留在图层上可继续用画笔修补。
+- ❗历史教训（不要再走回去）：曾按「不勾选就停用蒙版」实现，链尾追加 `to:{_obj:"layer",userMaskEnabled:false}`。真机后果是**一键流程卡死**：停用蒙版后图层整层不透明，画面仍是原图，且 Photoshop 拒绝后续羽化 `set userMaskFeather`（`命令"设置"当前不可用`），被 `busyRetries:40 / busyBudgetMs:180000` 的预算反复退避十几秒 ×12 次。已整段删除 —— 抠图代码里**不再出现任何 `userMaskEnabled:false`**，`verify/cutout-automask-check.js` 用「所有描述符里没有 `userMaskEnabled:false`」这条断言钉住。
+- `cutout.remove` 返回值：`maskEnabled:true`（恒为启用）、`maskApplied`（= 是否已回读确认启用，**不是**是否已烘焙，读不到时 `null`）、`bakeBySetting`。
+- 回读：`getUserMaskCoverage` 给出 `hasMask/maskEnabled/coverage`；若真读到 `maskEnabled === false`（极端情况），日志写「蒙版存在但处于停用状态：请在图层面板点一下蒙版缩览图启用」，不静默。
+- 证据状态：`UsrM` ↔ `userMaskEnabled` 的字符/字符串 ID 对应已在 `docs/DEVELOPER.md:270` 与 `本地取证材料 RESEARCH-host.md:223`（`UsrM | 1433629261 | userMaskEnabled | ✅`）取证；无蒙版时该键**不存在**（`本地取证材料 RESEARCH-host.md:562`）。

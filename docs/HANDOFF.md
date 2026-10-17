@@ -1,19 +1,16 @@
 # HANDOFF：会话交接（新对话先读这份）
 
 > 用途：记录**会话状态** —— 做完什么、什么没做、下一步从哪开始。**这不是项目文档**。
-> 生成时间：2026-10-16（会话结束前）。项目文档在 `docs/DEVELOPER.md`（为什么/怎么改）、`docs/INTERFACE.md`（冻结契约）、`docs/PLAN.md`（决策与验收）。
+> 生成时间：2026-10-16（会话结束前）；**最后一次刷新：2026-10-17（autoMask 语义修正 + 手动旋转图层/数字可输入已并入 v1.1.0）**。项目文档在 `docs/DEVELOPER.md`（为什么/怎么改）、`docs/INTERFACE.md`（冻结契约）、`docs/PLAN.md`（决策与验收）。
 
 ---
 
-## 0. 三十秒现状
+## 0. 三十秒现状（2026-10-17 更新）
 
-- **插件可用**：`plugin/` 下 13 个文件与装机目录**逐文件哈希一致（不一致 0 个）**；真机日志 `ecom-debug.log` 531141 字节，最后写入 2026-10-16 09:20。
-- **代码与 GitHub 同步**：本地 `main` = 远端 `main` = `34730f6 feat(install): 一键安装/卸载 bat + 文档同步`；Release `v1.0.0`（附 `ecom-psimage-v1.0.0.zip`）已发布。
-- **有 4 处未提交改动**（用户明确"先不提交，放本地"）：
-  - `M README.md`（目录树补新文档，并补上原先漏掉的 `DEVELOPER.md`）
-  - `M docs/DEVELOPER.md`（开头索引 +1 行）
-  - `?? docs/RESEARCH-plugins.md`（18151 字节 / 238 行）
-  - `?? docs/PLAN-straighten.md`（含 §8 多物体、§9 只读探针）
+- **插件可用**：`plugin/` 与装机目录**逐文件哈希一致（不一致 0 个）**，每次改完都跑 `pwsh -NoProfile -File .\reinstall.ps1`（脚本自己关 PS，用户已授权）。
+- **代码与 GitHub 同步**：`main` 最新提交 `d67b11f feat(straighten): 手动「旋转图层」+ 所有滑条数字都能直接输入`（9 文件 +494/−37，含 `plugin/src/ps.js` 的缺陷 7 pixelFrame 修复）；Release **`v1.1.0`**（tag 强制重打到 `c460a49`，资产 `dist/ecom-psimage-v1.1.0.zip` 165,168 字节 / 21 文件）。推远端要带代理：`HTTPS_PROXY=http://127.0.0.1:7897 git push origin main`（本机无 upstream，必须写明 `origin main`）；`verify/`、`local-only/`、`dist/` 不进仓库。
+- **离线自检**（全部 0 失败）：`verify/straighten-apply-check.js` 168 项、`straighten-math-check.js` 28 用例/143 断言、`straighten-multi-check.js` 8 项、`verify/cutout-refine-check.js` 30 项、`verify/cutout-automask-check.js` 14 项（`verify/mask-analyze.js`、`mask-frame-check.js` 需要命令行参数，不带参数退出码 2 属正常）。
+- **本会话最新一笔修复**：`plugin/src/cutout.js` `remove()` 不再在「未勾选应用图层蒙版」时停用蒙版（详见 §4 与 `docs/INTERFACE.md` 「v7 面板开关语义」）。
 
 ---
 
@@ -28,7 +25,7 @@
 | 网络 | 直连 GitHub 超时，**必须走 Clash 代理 `http://本地代理端口`** |
 | GitHub 凭证 | 会话里出现过的那枚 PAT 已建议吊销、临时 token 文件已删 → **推送前需要用户重新提供凭证** |
 | Photoshop | 27.1；装机 / 换代码前**必须完全退出 PS** 再启动 |
-| 回归命令 | `node --check` ×10；`%TEMP%\ecom-hostsim.js`（132 项）、`%TEMP%\ecom-v6-check.js`（62 项）、`%TEMP%\ecom-v3-probe2.js`（27 项）—— 期望**全 0 失败** |
+| 回归命令 | `node --check` 全部 `plugin/` 与 `plugin/src/*.js`；`node verify/straighten-apply-check.js`（168）、`verify/straighten-math-check.js`（143 断言）、`verify/straighten-multi-check.js`（8）、`verify/cutout-refine-check.js`（30）、`verify/cutout-automask-check.js`（14）—— 期望**全 0 失败** |
 | 调研克隆产物 | `%TEMP%\uxp-survey\`（9 个 shallow clone，可删） |
 
 ---
@@ -56,6 +53,7 @@
 
 - **`stringIDToTypeID` 会凭空造 ID**：事件名写错当时不报错，PS 执行时才回「命令"<未知的>"当前不可用」→ 新描述符一律**候选表逐个试 + 回读确认**（范例：`plugin/src/ps.js` 的 `applyUserMask`）。
 - 「当前不可用」有**三种**含义：PS 真忙（退避重试）/ 名字错（回 `<未知的>`）/ **图层锁定**（先解锁，文档 §18）。
+- **别用「停用蒙版」表达「不烘焙」**（用户 m04531）：蒙版停用后图层整层不透明（画面还是原图），且 PS 会拒后续 `set userMaskFeather`（`命令"设置"当前不可用`），被长预算反复退避 ⇒ 一键流程看起来卡死。语义是：抠图一律建好并**保持启用**蒙版，面板开关只决定后面的「应用蒙版」步骤是否烘焙。`verify/cutout-automask-check.js` 用「所有描述符里没有 `userMaskEnabled:false`」钉住。
 - **命令成功 ≠ 生效**：必须回读。读蒙版用整层 `get` + `hasKey('userMaskEnabled')`（其**布尔值**才是判据）；按通道引用读蒙版在 PS 27.1 恒报「程序错误」，不可用作判据。
 - **ExtendScript DOM 句柄会失效**：必须**重新取对象**再读（别复用手里的 `L.mask`）。
 - 可选步骤失败只 `log("warn", ...)` 继续，**不得掐死一键流程**（文档 §17）。

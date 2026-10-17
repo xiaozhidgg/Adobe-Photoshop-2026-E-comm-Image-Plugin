@@ -397,8 +397,9 @@ window.Ecom = window.Ecom || {};
         fire("onStateChange", { moduleEnabled: mergeModules("cutout", v) });
       });
       inner.cbCutout = cb;
-      // v6（用户要求，措辞按用户原话）：勾选＝抠完图自动应用蒙版；不勾选＝只抠图，不应用蒙版。
-      inner.cbAutoMask = checkboxRow(s, "抠图后应用图层蒙版（烘焙进像素；不勾选＝只抠图，蒙版建好但停用、可继续编辑）",
+      // v6（用户原话）：勾选＝抠完图自动应用蒙版；不勾选＝只抠图，不烘焙。
+      // ★ m04531 澄清：不勾选只是【不烘焙】，蒙版本身照旧建好并保持启用（能看到抠图结果、可继续编辑）。
+      inner.cbAutoMask = checkboxRow(s, "抠图后应用图层蒙版（烘焙进像素；不勾选＝只抠图不烘焙，蒙版建好并保持启用、可继续编辑）",
         state.cutout ? state.cutout.autoMask !== false : true, function (v) {
           fire("onStateChange", patchCutout("autoMask", v));
         });
@@ -406,7 +407,7 @@ window.Ecom = window.Ecom || {};
       var b = button(row, "执行抠图");
       b.addEventListener("click", function () { fire("onRunModule", "cutout"); });
       s.appendChild(row);
-      s.appendChild(el("div", "hint", "勾选（默认）：一键流程在「边缘净化」之后执行 PS 的「图层>图层蒙版>应用」—— 蒙版烘焙进像素，图层面板上的蒙版缩览图消失、主体外变成真透明。不勾选：只执行抠图，蒙版照样建好但保持停用，可先用画笔修补，图层面板 Shift+点击蒙版缩略图随时启用。"));
+      s.appendChild(el("div", "hint", "勾选（默认）：一键流程在「边缘净化」之后执行 PS 的「图层>图层蒙版>应用」—— 蒙版烘焙进像素，图层面板上的蒙版缩览图消失、主体外变成真透明。不勾选：只执行抠图不烘焙，蒙版照样建好并【保持启用】（画面立刻能看到抠图结果），方便用画笔继续修补；之后想烘焙，勾选本项重跑，或手动执行「图层>图层蒙版>应用」。"));
     }
 
     function buildStraighten() {
